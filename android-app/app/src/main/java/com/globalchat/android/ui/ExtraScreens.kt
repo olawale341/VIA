@@ -9,6 +9,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -23,66 +24,171 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
 import com.globalchat.android.model.ActiveCallUiState
+import com.globalchat.android.model.CallStatus
 import com.globalchat.android.model.UserProfile
 import kotlinx.coroutines.delay
+import org.webrtc.EglBase
+import org.webrtc.RendererCommon
+import org.webrtc.SurfaceViewRenderer
 
 @Composable
-fun ActiveCallScreen(call: ActiveCallUiState, onEndCall: () -> Unit) {
-    var seconds by remember { mutableIntStateOf(0) }
-    var isMuted by remember { mutableStateOf(false) }
-    var isSpeaker by remember { mutableStateOf(false) }
+fun ActiveCallScreen(
+    call: ActiveCallUiState,
+    eglContext: EglBase.Context,
+    onAttachRenderers: (SurfaceViewRenderer?, SurfaceViewRenderer?) -> Unit,
+    onDetachRenderers: () -> Unit,
+    onAccept: () -> Unit,
+    onToggleMute: () -> Unit,
+    onToggleSpeaker: () -> Unit,
+    onEndCall: () -> Unit
+) {
+    val context = LocalContext.current
+    var seconds by remember(call.status) { mutableIntStateOf(0) }
 
-    LaunchedEffect(Unit) {
-        delay(2500)
-        while (true) {
-            seconds++
-            delay(1000)
+    LaunchedEffect(call.status) {
+        if (call.status == CallStatus.CONNECTED) {
+            while (true) {
+                delay(1000)
+                seconds++
+            }
         }
     }
 
-    val statusText = if (seconds == 0) {
-        if (call.isVideo) "Video calling..." else "Calling..."
-    } else {
-        "%02d:%02d".format(seconds / 60, seconds % 60)
+    val remoteView = remember(call.isVideo) {
+        if (!call.isVideo) null else SurfaceViewRenderer(context).apply {
+            init(eglContext, null)
+            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+            setEnableHardwareScaler(true)
+        }
+    }
+    val localView = remember(call.isVideo) {
+        if (!call.isVideo) null else SurfaceViewRenderer(context).apply {
+            init(eglContext, null)
+            setScalingType(RendererCommon.ScalingType.SCALE_ASPECT_FILL)
+            setZOrderMediaOverlay(true)
+            setMirror(true)
+            setEnableHardwareScaler(true)
+        }
     }
 
-    Column(
-        modifier = Modifier.fillMaxSize().background(Color(0xFF0B141A)).padding(32.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.SpaceBetween
-    ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            Spacer(Modifier.height(24.dp))
-            Text("End-to-end encrypted", fontSize = 12.sp, color = Color(0xFF8696A0))
-            Spacer(Modifier.height(20.dp))
-            Text(call.title, fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
-            Spacer(Modifier.height(8.dp))
-            Text(statusText, fontSize = 15.sp, color = Color(0xFF8696A0))
+    DisposableEffect(call.isVideo) {
+        if (call.isVideo) {
+            onAttachRenderers(localView, remoteView)
+        }
+        onDispose {
+            if (call.isVideo) onDetachRenderers()
+        }
+    }
+
+    val statusText = when (call.status) {
+        CallStatus.OUTGOING_RINGING -> if (call.isVideo) "Video calling..." else "Calling..."
+        CallStatus.INCOMING_RINGING -> if (call.isVideo) "Incoming video call..." else "Incoming voice call..."
+        CallStatus.CONNECTING -> "Connecting..."
+        CallStatus.CONNECTED -> "%02d:%02d".format(seconds / 60, seconds % 60)
+    }
+
+    Box(modifier = Modifier.fillMaxSize().background(Color(0xFF0B141A))) {
+        if (call.isVideo && remoteView != null) {
+            AndroidView(factory = { remoteView }, modifier = Modifier.fillMaxSize())
         }
 
-        Box(Modifier.size(130.dp).clip(CircleShape).background(Color(0xFF202C33)), Alignment.Center) {
-            Icon(if (call.isVideo) Icons.Default.Videocam else Icons.Default.Person, null, tint = Color.White, modifier = Modifier.size(64.dp))
+        if (call.isVideo && localView != null) {
+            AndroidView(
+                factory = { localView },
+                modifier = Modifier
+                    .align(Alignment.TopEnd)
+                    .padding(top = 48.dp, end = 16.dp)
+                    .size(width = 105.dp, height = 150.dp)
+                    .clip(RoundedCornerShape(12.dp))
+            )
         }
 
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly, verticalAlignment = Alignment.CenterVertically) {
-            IconButton(
-                onClick = { isSpeaker = !isSpeaker },
-                modifier = Modifier.size(54.dp).background(if (isSpeaker) Color.White else Color(0xFF202C33), CircleShape)
-            ) {
-                Icon(Icons.Default.VolumeUp, "Speaker", tint = if (isSpeaker) Color.Black else Color.White)
+        Column(
+            modifier = Modifier.fillMaxSize().padding(32.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.SpaceBetween
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Spacer(Modifier.height(24.dp))
+                Text("GlobalChat Live Call", fontSize = 12.sp, color = Color(0xFF8696A0))
+                Spacer(Modifier.height(18.dp))
+                Text(call.title, fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                Spacer(Modifier.height(8.dp))
+                Text(statusText, fontSize = 15.sp, color = Color(0xFFD9FDD3))
             }
-            IconButton(
-                onClick = { isMuted = !isMuted },
-                modifier = Modifier.size(54.dp).background(if (isMuted) Color.White else Color(0xFF202C33), CircleShape)
-            ) {
-                Icon(if (isMuted) Icons.Default.MicOff else Icons.Default.Mic, "Mute", tint = if (isMuted) Color.Black else Color.White)
+
+            if (!call.isVideo || call.status != CallStatus.CONNECTED) {
+                Box(Modifier.size(130.dp).clip(CircleShape).background(Color(0xFF202C33)), Alignment.Center) {
+                    Icon(
+                        if (call.isVideo) Icons.Default.Videocam else Icons.Default.Person,
+                        null,
+                        tint = Color.White,
+                        modifier = Modifier.size(64.dp)
+                    )
+                }
+            } else {
+                Spacer(Modifier.height(130.dp))
             }
-            IconButton(
-                onClick = onEndCall,
-                modifier = Modifier.size(64.dp).background(Color(0xFFE53935), CircleShape)
-            ) {
-                Icon(Icons.Default.CallEnd, "End Call", tint = Color.White, modifier = Modifier.size(30.dp))
+
+            if (call.status == CallStatus.INCOMING_RINGING) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        IconButton(
+                            onClick = onEndCall,
+                            modifier = Modifier.size(66.dp).background(Color(0xFFE53935), CircleShape)
+                        ) {
+                            Icon(Icons.Default.CallEnd, "Decline", tint = Color.White, modifier = Modifier.size(30.dp))
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text("Decline", color = Color.White, fontSize = 12.sp)
+                    }
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        IconButton(
+                            onClick = onAccept,
+                            modifier = Modifier.size(66.dp).background(Color(0xFF1DAB61), CircleShape)
+                        ) {
+                            Icon(
+                                if (call.isVideo) Icons.Default.Videocam else Icons.Default.Call,
+                                "Accept",
+                                tint = Color.White,
+                                modifier = Modifier.size(30.dp)
+                            )
+                        }
+                        Spacer(Modifier.height(6.dp))
+                        Text("Accept", color = Color.White, fontSize = 12.sp)
+                    }
+                }
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceEvenly,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(
+                        onClick = onToggleSpeaker,
+                        modifier = Modifier.size(54.dp).background(if (call.isSpeaker) Color.White else Color(0xFF202C33), CircleShape)
+                    ) {
+                        Icon(Icons.Default.VolumeUp, "Speaker", tint = if (call.isSpeaker) Color.Black else Color.White)
+                    }
+                    IconButton(
+                        onClick = onToggleMute,
+                        modifier = Modifier.size(54.dp).background(if (call.isMuted) Color.White else Color(0xFF202C33), CircleShape)
+                    ) {
+                        Icon(if (call.isMuted) Icons.Default.MicOff else Icons.Default.Mic, "Mute", tint = if (call.isMuted) Color.Black else Color.White)
+                    }
+                    IconButton(
+                        onClick = onEndCall,
+                        modifier = Modifier.size(64.dp).background(Color(0xFFE53935), CircleShape)
+                    ) {
+                        Icon(Icons.Default.CallEnd, "End Call", tint = Color.White, modifier = Modifier.size(30.dp))
+                    }
+                }
             }
         }
     }
@@ -141,7 +247,7 @@ fun SettingsScreen(
 
             OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Display Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(value = about, onValueChange = { about = it }, label = { Text("About") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = serverHost, onValueChange = { serverHost = it }, label = { Text("Cloud Server Address (Upgrade 2)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(value = serverHost, onValueChange = { serverHost = it }, label = { Text("Cloud Server Address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
@@ -159,10 +265,7 @@ fun SettingsScreen(
                 Text("Save Changes", color = Color.White, fontWeight = FontWeight.SemiBold)
             }
 
-            OutlinedButton(
-                onClick = onLogOut,
-                modifier = Modifier.fillMaxWidth()
-            ) {
+            OutlinedButton(onClick = onLogOut, modifier = Modifier.fillMaxWidth()) {
                 Text("Log Out / Switch Number", color = Color.Red)
             }
         }
