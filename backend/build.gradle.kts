@@ -24,4 +24,8 @@ dependencies {
     implementation("io.ktor:ktor-client-cio-jvm:3.6.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.8.0")
     implementation("ch.qos.logback:logback-classic:1.5.12")
+
+    // PostgreSQL + Connection Pool
+    implementation("org.postgresql:postgresql:42.7.10")
+    implementation("com.zaxxer:HikariCP:7.0.2")
 }
