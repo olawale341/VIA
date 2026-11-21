@@ -1,11 +1,18 @@
 package com.globalchat.android
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.*
+import androidx.compose.ui.platform.LocalContext
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.globalchat.android.model.OnboardingStep
 import com.globalchat.android.ui.*
@@ -23,6 +30,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun GlobalChatApp(vm: MainViewModel = viewModel()) {
+    val context = LocalContext.current
     val step by vm.onboardingStep.collectAsState()
     val profile by vm.profile.collectAsState()
     val pendingPhone by vm.pendingPhone.collectAsState()
@@ -42,6 +50,8 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
 
     var showSettings by remember { mutableStateOf(false) }
 
+    val notifPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     when (step) {
         OnboardingStep.WELCOME -> WelcomeScreen(onAgree = vm::acceptTerms)
         OnboardingStep.PHONE -> PhoneEntryScreen(
@@ -60,6 +70,13 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
         )
         OnboardingStep.PROFILE -> ProfileSetupScreen(onComplete = vm::completeProfile)
         OnboardingStep.DONE -> {
+            LaunchedEffect(Unit) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    val granted = ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+                    if (!granted) notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+
             val call = activeCall
             if (call != null) {
                 BackHandler { vm.endCall() }
