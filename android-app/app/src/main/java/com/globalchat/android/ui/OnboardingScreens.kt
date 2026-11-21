@@ -70,25 +70,30 @@ fun WelcomeScreen(onAgree: () -> Unit) {
 }
 
 @Composable
-fun PhoneEntryScreen(onSubmit: (String, String) -> Unit) {
+fun PhoneEntryScreen(
+    isLoading: Boolean,
+    errorText: String?,
+    onSubmit: (String, String, String) -> Unit
+) {
     var selectedCountry by remember { mutableStateOf(supportedCountries.first()) }
     var showCountryMenu by remember { mutableStateOf(false) }
     var localPhone by remember { mutableStateOf("") }
+    var email by remember { mutableStateOf("") }
 
     Column(
         modifier = Modifier.fillMaxSize().background(Color.White).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Spacer(Modifier.height(24.dp))
-        Text("Enter your phone number", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WaGreen)
+        Text("Enter your phone & email", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WaGreen)
         Spacer(Modifier.height(10.dp))
         Text(
-            "GlobalChat will verify your phone number. Carrier SMS charges may apply once live OTP is enabled.",
+            "GlobalChat will email a free 6-digit verification code to verify your account.",
             textAlign = TextAlign.Center,
             fontSize = 13.sp,
             color = Color(0xFF667781)
         )
-        Spacer(Modifier.height(28.dp))
+        Spacer(Modifier.height(24.dp))
 
         Box(modifier = Modifier.fillMaxWidth()) {
             OutlinedTextField(
@@ -97,17 +102,14 @@ fun PhoneEntryScreen(onSubmit: (String, String) -> Unit) {
                 readOnly = true,
                 label = { Text("Country") },
                 trailingIcon = { Icon(Icons.Default.ArrowDropDown, null) },
-                modifier = Modifier.fillMaxWidth().clickable { showCountryMenu = true }
+                modifier = Modifier.fillMaxWidth()
             )
             Box(modifier = Modifier.matchParentSize().clickable { showCountryMenu = true })
             DropdownMenu(expanded = showCountryMenu, onDismissRequest = { showCountryMenu = false }) {
                 supportedCountries.forEach { country ->
                     DropdownMenuItem(
                         text = { Text("${country.flag}  ${country.name} (${country.dialCode})") },
-                        onClick = {
-                            selectedCountry = country
-                            showCountryMenu = false
-                        }
+                        onClick = { selectedCountry = country; showCountryMenu = false }
                     )
                 }
             }
@@ -133,15 +135,32 @@ fun PhoneEntryScreen(onSubmit: (String, String) -> Unit) {
             )
         }
 
+        Spacer(Modifier.height(12.dp))
+        OutlinedTextField(
+            value = email,
+            onValueChange = { email = it },
+            label = { Text("Email for 6-digit OTP") },
+            placeholder = { Text("you@gmail.com") },
+            singleLine = true,
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            modifier = Modifier.fillMaxWidth()
+        )
+
+        if (errorText != null) {
+            Spacer(Modifier.height(10.dp))
+            Text(errorText, color = Color.Red, fontSize = 12.sp, textAlign = TextAlign.Center)
+        }
+
         Spacer(Modifier.weight(1f))
         Button(
-            onClick = { onSubmit(selectedCountry.dialCode, localPhone) },
-            enabled = localPhone.count { it.isDigit() } >= 6,
+            onClick = { onSubmit(selectedCountry.dialCode, localPhone, email) },
+            enabled = !isLoading && localPhone.count { it.isDigit() } >= 6 && email.contains("@"),
             shape = RoundedCornerShape(24.dp),
             colors = ButtonDefaults.buttonColors(containerColor = WaGreen),
-            modifier = Modifier.width(140.dp).height(46.dp)
+            modifier = Modifier.width(160.dp).height(46.dp)
         ) {
-            Text("Next", color = Color.White, fontWeight = FontWeight.SemiBold)
+            if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Send Code", color = Color.White, fontWeight = FontWeight.SemiBold)
         }
         Spacer(Modifier.height(16.dp))
     }
@@ -150,8 +169,11 @@ fun PhoneEntryScreen(onSubmit: (String, String) -> Unit) {
 @Composable
 fun OtpVerificationScreen(
     phoneNumber: String,
+    email: String,
+    isLoading: Boolean,
     errorText: String?,
     onVerify: (String) -> Unit,
+    onResend: () -> Unit,
     onWrongNumber: () -> Unit
 ) {
     var otpCode by remember { mutableStateOf("") }
@@ -171,31 +193,14 @@ fun OtpVerificationScreen(
         Spacer(Modifier.height(24.dp))
         Text("Verifying $phoneNumber", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WaGreen)
         Spacer(Modifier.height(8.dp))
-        TextButton(onClick = onWrongNumber) {
-            Text("Wrong number?", color = Color(0xFF027EB5))
-        }
-        Spacer(Modifier.height(12.dp))
+        Text("We emailed a 6-digit code to $email", fontSize = 13.sp, color = Color(0xFF667781), textAlign = TextAlign.Center)
+        TextButton(onClick = onWrongNumber) { Text("Wrong phone or email?", color = Color(0xFF027EB5)) }
 
-        Surface(
-            color = Color(0xFFFFF8E1),
-            shape = RoundedCornerShape(10.dp),
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text(
-                "Pre-Firebase Test Mode: Enter 123456 below to continue. Real SIM SMS arrives after Upgrade 3 (Firebase Auth).",
-                fontSize = 12.sp,
-                color = Color(0xFF6D4C41),
-                modifier = Modifier.padding(12.dp),
-                textAlign = TextAlign.Center
-            )
-        }
-
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(20.dp))
         OutlinedTextField(
             value = otpCode,
             onValueChange = { if (it.length <= 6 && it.all(Char::isDigit)) otpCode = it },
             label = { Text("Enter 6-digit code") },
-            placeholder = { Text("123456") },
             singleLine = true,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
             modifier = Modifier.width(220.dp)
@@ -206,21 +211,26 @@ fun OtpVerificationScreen(
         }
         Spacer(Modifier.height(16.dp))
         Text(
-            text = if (secondsLeft > 0) "Resend SMS in 0:${secondsLeft.toString().padStart(2, '0')}" else "Didn't receive code? Tap Resend (test code: 123456)",
+            text = if (secondsLeft > 0) "Resend code in 0:${secondsLeft.toString().padStart(2, '0')}" else "Didn't receive code? Tap to Resend",
             fontSize = 13.sp,
-            color = Color(0xFF667781),
-            modifier = Modifier.clickable(enabled = secondsLeft == 0) { secondsLeft = 60 }
+            color = if (secondsLeft > 0) Color(0xFF667781) else WaGreen,
+            fontWeight = if (secondsLeft == 0) FontWeight.Bold else FontWeight.Normal,
+            modifier = Modifier.clickable(enabled = secondsLeft == 0 && !isLoading) {
+                secondsLeft = 60
+                onResend()
+            }
         )
 
         Spacer(Modifier.weight(1f))
         Button(
             onClick = { onVerify(otpCode) },
-            enabled = otpCode.length == 6,
+            enabled = !isLoading && otpCode.length == 6,
             shape = RoundedCornerShape(24.dp),
             colors = ButtonDefaults.buttonColors(containerColor = WaGreen),
             modifier = Modifier.width(160.dp).height(46.dp)
         ) {
-            Text("Verify", color = Color.White, fontWeight = FontWeight.SemiBold)
+            if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Verify", color = Color.White, fontWeight = FontWeight.SemiBold)
         }
         Spacer(Modifier.height(16.dp))
     }
