@@ -1,18 +1,31 @@
 package com.globalchat.android.data.remote
 
-import com.globalchat.android.model.ChatPayload
+import com.globalchat.android.model.*
 import io.ktor.client.*
 import io.ktor.client.engine.okhttp.*
 import io.ktor.client.plugins.websocket.*
+import io.ktor.client.request.*
+import io.ktor.client.statement.*
+import io.ktor.http.*
 import io.ktor.websocket.*
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.concurrent.TimeUnit
 
 class ChatSocketClient {
     private val json = Json { ignoreUnknownKeys = true }
-    private val client = HttpClient(OkHttp) { install(WebSockets) }
+    private val client = HttpClient(OkHttp) {
+        install(WebSockets)
+        engine {
+            config {
+                connectTimeout(60, TimeUnit.SECONDS)
+                readTimeout(60, TimeUnit.SECONDS)
+                writeTimeout(60, TimeUnit.SECONDS)
+            }
+        }
+    }
 
     private var session: DefaultClientWebSocketSession? = null
     private var connectionJob: Job? = null
@@ -23,36 +36,66 @@ class ChatSocketClient {
     private val _isConnected = MutableStateFlow(false)
     val isConnected: StateFlow<Boolean> = _isConnected.asStateFlow()
 
-    fun start(scope: CoroutineScope, myUserId: String, serverHost: String) {
+    private fun parseHost(serverHost: String): Pair<String, Boolean> {
         val cleanHost = serverHost.trim()
             .removePrefix("ws://")
             .removePrefix("wss://")
             .removePrefix("https://")
             .removePrefix("http://")
             .trimEnd('/')
-        val scheme = if (
-            cleanHost.startsWith("10.") ||
+        val isLocal = cleanHost.startsWith("10.") ||
             cleanHost.startsWith("192.168.") ||
             cleanHost.startsWith("localhost") ||
             cleanHost.contains(":")
-        ) "ws" else "wss"
+        return cleanHost to isLocal
+    }
+
+    suspend fun requestOtp(serverHost: String, phone: String, email: String): OtpApiResult {
+        val (host, isLocal) = parseHost(serverHost)
+        val httpScheme = if (isLocal) "http" else "https"
+        return try {
+            val resp = client.post("$httpScheme://$host/auth/request-otp") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(OtpRequestBody(phone, email)))
+            }
+            json.decodeFromString<OtpApiResult>(resp.bodyAsText())
+        } catch (e: Exception) {
+            OtpApiResult(false, "Server waking up or unreachable: ${e.localizedMessage}")
+        }
+    }
+
+    suspend fun verifyOtp(serverHost: String, phone: String, code: String): OtpApiResult {
+        val (host, isLocal) = parseHost(serverHost)
+        val httpScheme = if (isLocal) "http" else "https"
+        return try {
+            val resp = client.post("$httpScheme://$host/auth/verify-otp") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(OtpVerifyBody(phone, code)))
+            }
+            json.decodeFromString<OtpApiResult>(resp.bodyAsText())
+        } catch (e: Exception) {
+            OtpApiResult(false, "Network error: ${e.localizedMessage}")
+        }
+    }
+
+    fun start(scope: CoroutineScope, myUserId: String, serverHost: String) {
+        val (cleanHost, isLocal) = parseHost(serverHost)
+        val wsScheme = if (isLocal) "ws" else "wss"
 
         connectionJob?.cancel()
         connectionJob = scope.launch(Dispatchers.IO) {
             while (isActive) {
                 try {
-                    client.webSocket("$scheme://$cleanHost/chat/$myUserId") {
+                    client.webSocket("$wsScheme://$cleanHost/chat/$myUserId") {
                         session = this
                         _isConnected.value = true
                         for (frame in incoming) {
                             if (frame is Frame.Text) {
-                                val payload = json.decodeFromString<ChatPayload>(frame.readText())
-                                _incoming.emit(payload)
+                                _incoming.emit(json.decodeFromString<ChatPayload>(frame.readText()))
                             }
                         }
                     }
                 } catch (_: Exception) {
-                    // Auto-retry every 3 seconds
                 } finally {
                     session = null
                     _isConnected.value = false
