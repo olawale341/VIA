@@ -5,6 +5,7 @@ import android.media.AudioManager
 import android.os.Handler
 import android.os.Looper
 import org.webrtc.*
+import java.util.concurrent.Executors
 
 class WebRtcManager(
     context: Context,
@@ -15,12 +16,19 @@ class WebRtcManager(
 ) {
     private val appContext = context.applicationContext
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val executor = Executors.newSingleThreadExecutor()
     val eglBase: EglBase = EglBase.create()
 
+    @Volatile
+    private var factoryInitialized = false
+
     private val factory: PeerConnectionFactory by lazy {
-        PeerConnectionFactory.initialize(
-            PeerConnectionFactory.InitializationOptions.builder(appContext).createInitializationOptions()
-        )
+        if (!factoryInitialized) {
+            PeerConnectionFactory.initialize(
+                PeerConnectionFactory.InitializationOptions.builder(appContext).createInitializationOptions()
+            )
+            factoryInitialized = true
+        }
         PeerConnectionFactory.builder()
             .setVideoEncoderFactory(DefaultVideoEncoderFactory(eglBase.eglBaseContext, true, true))
             .setVideoDecoderFactory(DefaultVideoDecoderFactory(eglBase.eglBaseContext))
@@ -42,7 +50,7 @@ class WebRtcManager(
     private val pendingIce = mutableListOf<IceCandidate>()
 
     private fun setupPeerConnection(isVideo: Boolean, speakerOn: Boolean) {
-        close()
+        closeInternal()
         remoteDescSet = false
         pendingIce.clear()
         setSpeakerphone(speakerOn)
@@ -85,12 +93,12 @@ class WebRtcManager(
             }
         })
 
-        // Local Audio
-        audioSource = factory.createAudioSource(MediaConstraints())
-        localAudioTrack = factory.createAudioTrack("GLOBALCHAT_AUDIO", audioSource)
-        peerConnection?.addTrack(localAudioTrack, listOf("GLOBALCHAT_STREAM"))
+        try {
+            audioSource = factory.createAudioSource(MediaConstraints())
+            localAudioTrack = factory.createAudioTrack("GLOBALCHAT_AUDIO", audioSource)
+            peerConnection?.addTrack(localAudioTrack, listOf("GLOBALCHAT_STREAM"))
+        } catch (_: Exception) { }
 
-        // Local Video
         if (isVideo) {
             try {
                 val enumerator = Camera2Enumerator(appContext)
@@ -116,47 +124,52 @@ class WebRtcManager(
     }
 
     fun startOutgoingCall(isVideo: Boolean) {
-        setupPeerConnection(isVideo = isVideo, speakerOn = isVideo)
-        val constraints = MediaConstraints().apply {
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
-            mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", isVideo.toString()))
-        }
-        peerConnection?.createOffer(SimpleSdpObserver(onCreated = { sdp ->
-            peerConnection?.setLocalDescription(SimpleSdpObserver(), sdp)
-            onLocalSdpReady(true, sdp.description)
-        }), constraints)
-    }
-
-    fun answerIncomingCall(offerSdp: String, isVideo: Boolean) {
-        setupPeerConnection(isVideo = isVideo, speakerOn = isVideo)
-        val remoteOffer = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
-        peerConnection?.setRemoteDescription(SimpleSdpObserver(onSet = {
-            remoteDescSet = true
-            flushPendingIce()
+        executor.execute {
+            setupPeerConnection(isVideo = isVideo, speakerOn = isVideo)
             val constraints = MediaConstraints().apply {
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
                 mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", isVideo.toString()))
             }
-            peerConnection?.createAnswer(SimpleSdpObserver(onCreated = { sdp ->
+            peerConnection?.createOffer(SimpleSdpObserver(onCreated = { sdp ->
                 peerConnection?.setLocalDescription(SimpleSdpObserver(), sdp)
-                onLocalSdpReady(false, sdp.description)
+                onLocalSdpReady(true, sdp.description)
             }), constraints)
-        }), remoteOffer)
+        }
+    }
+
+    fun answerIncomingCall(offerSdp: String, isVideo: Boolean) {
+        executor.execute {
+            setupPeerConnection(isVideo = isVideo, speakerOn = isVideo)
+            val remoteOffer = SessionDescription(SessionDescription.Type.OFFER, offerSdp)
+            peerConnection?.setRemoteDescription(SimpleSdpObserver(onSet = {
+                remoteDescSet = true
+                flushPendingIce()
+                val constraints = MediaConstraints().apply {
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveAudio", "true"))
+                    mandatory.add(MediaConstraints.KeyValuePair("OfferToReceiveVideo", isVideo.toString()))
+                }
+                peerConnection?.createAnswer(SimpleSdpObserver(onCreated = { sdp ->
+                    peerConnection?.setLocalDescription(SimpleSdpObserver(), sdp)
+                    onLocalSdpReady(false, sdp.description)
+                }), constraints)
+            }), remoteOffer)
+        }
     }
 
     fun onRemoteAnswer(answerSdp: String) {
-        val remoteAnswer = SessionDescription(SessionDescription.Type.ANSWER, answerSdp)
-        peerConnection?.setRemoteDescription(SimpleSdpObserver(onSet = {
-            remoteDescSet = true
-            flushPendingIce()
-        }), remoteAnswer)
+        executor.execute {
+            val remoteAnswer = SessionDescription(SessionDescription.Type.ANSWER, answerSdp)
+            peerConnection?.setRemoteDescription(SimpleSdpObserver(onSet = {
+                remoteDescSet = true
+                flushPendingIce()
+            }), remoteAnswer)
+        }
     }
 
     fun addRemoteIceCandidate(candidate: IceCandidate) {
-        if (remoteDescSet) {
-            peerConnection?.addIceCandidate(candidate)
-        } else {
-            pendingIce.add(candidate)
+        executor.execute {
+            if (remoteDescSet) peerConnection?.addIceCandidate(candidate)
+            else pendingIce.add(candidate)
         }
     }
 
@@ -166,17 +179,21 @@ class WebRtcManager(
     }
 
     fun attachRenderers(local: SurfaceViewRenderer?, remote: SurfaceViewRenderer?) {
-        localRenderer = local
-        remoteRenderer = remote
-        local?.let { localVideoTrack?.addSink(it) }
-        remote?.let { remoteVideoTrack?.addSink(it) }
+        mainHandler.post {
+            localRenderer = local
+            remoteRenderer = remote
+            local?.let { localVideoTrack?.addSink(it) }
+            remote?.let { remoteVideoTrack?.addSink(it) }
+        }
     }
 
     fun detachRenderers() {
-        localRenderer?.let { localVideoTrack?.removeSink(it); it.release() }
-        remoteRenderer?.let { remoteVideoTrack?.removeSink(it); it.release() }
-        localRenderer = null
-        remoteRenderer = null
+        mainHandler.post {
+            localRenderer?.let { localVideoTrack?.removeSink(it); it.release() }
+            remoteRenderer?.let { remoteVideoTrack?.removeSink(it); it.release() }
+            localRenderer = null
+            remoteRenderer = null
+        }
     }
 
     fun setMuted(muted: Boolean) {
@@ -193,6 +210,10 @@ class WebRtcManager(
     }
 
     fun close() {
+        executor.execute { closeInternal() }
+    }
+
+    private fun closeInternal() {
         remoteDescSet = false
         pendingIce.clear()
         try { videoCapturer?.stopCapture() } catch (_: Exception) { }
