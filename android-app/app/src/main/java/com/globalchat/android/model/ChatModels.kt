@@ -2,6 +2,8 @@ package com.globalchat.android.model
 
 import kotlinx.serialization.Serializable
 
+const val DEFAULT_SERVER_HOST = "globalchat-server.onrender.com"
+
 @Serializable
 enum class MessageStatus { SENDING, SENT, DELIVERED, READ }
 
@@ -15,7 +17,7 @@ data class ChatPayload(
     val timestamp: Long,
     val status: MessageStatus = MessageStatus.SENT,
     val type: String = "TEXT",
-    val mediaType: String = "TEXT", // "TEXT" | "IMAGE" | "VOICE"
+    val mediaType: String = "TEXT",
     val mediaBase64: String? = null,
     val durationSec: Int = 0,
     val replyToId: String? = null,
@@ -24,6 +26,15 @@ data class ChatPayload(
     val isGroup: Boolean = false,
     val groupName: String? = null
 )
+
+@Serializable
+data class OtpRequestBody(val phone: String, val email: String)
+
+@Serializable
+data class OtpVerifyBody(val phone: String, val code: String)
+
+@Serializable
+data class OtpApiResult(val ok: Boolean, val message: String)
 
 enum class OnboardingStep { WELCOME, PHONE, OTP, PROFILE, DONE }
 
@@ -49,7 +60,7 @@ data class UserProfile(
     val displayName: String = "",
     val about: String = "Hey there! I am using GlobalChat.",
     val avatarBase64: String? = null,
-    val serverHost: String = "10.0.2.2:8080",
+    val serverHost: String = DEFAULT_SERVER_HOST,
     val readReceipts: Boolean = true,
     val isRegistered: Boolean = false
 )
