@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.globalchat.android.crypto.E2eeCrypto
 import com.globalchat.android.data.local.*
 import com.globalchat.android.data.remote.ChatSocketClient
 import com.globalchat.android.model.*
@@ -91,12 +92,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
             },
-            onConnected = {
-                _activeCall.update { it?.copy(status = CallStatus.CONNECTED) }
-            },
-            onClosed = {
-                if (_activeCall.value != null) endCall(sendSignal = false)
-            }
+            onConnected = { _activeCall.update { it?.copy(status = CallStatus.CONNECTED) } },
+            onClosed = { if (_activeCall.value != null) endCall(sendSignal = false) }
         )
     }
 
@@ -133,11 +130,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val saved = _profile.value
         if (saved.isRegistered && saved.phoneNumber.isNotBlank()) {
             socket.start(viewModelScope, saved.phoneNumber, saved.serverHost)
-            syncFcmToken(saved.serverHost, saved.phoneNumber)
+            syncKeysAndPush(saved.serverHost, saved.phoneNumber)
         }
     }
 
-    private fun syncFcmToken(serverHost: String, phone: String) {
+    private fun syncKeysAndPush(serverHost: String, phone: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val myPub = E2eeCrypto.getMyPublicKeyBase64(appContext)
+            socket.uploadPublicKey(serverHost, phone, myPub)
+        }
         try {
             FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
                 if (!token.isNullOrBlank()) {
@@ -216,7 +217,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _profile.value = updated
             _onboardingStep.value = OnboardingStep.DONE
             socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about)
-            syncFcmToken(updated.serverHost, updated.phoneNumber)
+            syncKeysAndPush(updated.serverHost, updated.phoneNumber)
             socket.start(viewModelScope, updated.phoneNumber, updated.serverHost)
         }
     }
@@ -235,7 +236,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             prefs.save(updated)
             _profile.value = updated
             socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about)
-            syncFcmToken(updated.serverHost, updated.phoneNumber)
+            syncKeysAndPush(updated.serverHost, updated.phoneNumber)
             socket.start(viewModelScope, updated.phoneNumber, updated.serverHost)
         }
     }
@@ -328,15 +329,55 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun dispatchMessage(content: String, mediaType: String, mediaBase64: String?, durationSec: Int, replyTo: MessageEntity?) {
         val me = _profile.value.phoneNumber
+        val server = _profile.value.serverHost
         val chatId = _activeChatId.value ?: return
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             val chat = dao.getChat(chatId) ?: return@launch
             val receivers = chat.memberIdsCsv.split(",").filter { it.isNotBlank() && it != me }
             val msgId = UUID.randomUUID().toString()
             val now = System.currentTimeMillis()
+
             dao.upsertMessage(MessageEntity(msgId, chatId, me, content, now, MessageStatus.SENDING, mediaType, mediaBase64, durationSec, replyTo?.id, replyTo?.content))
             dao.upsertChat(chat.copy(lastMessage = content, lastTimestamp = now))
-            socket.send(ChatPayload(msgId, chatId, me, receivers, content, now, MessageStatus.SENDING, "TEXT", mediaType, mediaBase64, durationSec, replyTo?.id, replyTo?.content, isGroup = chat.isGroup, groupName = if (chat.isGroup) chat.title else null))
+
+            var wireContent = content
+            var wireMedia = mediaBase64
+            var wireReply = replyTo?.content
+            var encryptedFlag = false
+
+            if (!chat.isGroup && receivers.size == 1) {
+                val partnerKey = socket.fetchPublicKey(server, receivers.first())
+                if (!partnerKey.isNullOrBlank()) {
+                    val encC = E2eeCrypto.encrypt(appContext, content, partnerKey)
+                    if (encC != null) {
+                        wireContent = encC
+                        wireMedia = mediaBase64?.let { E2eeCrypto.encrypt(appContext, it, partnerKey) } ?: mediaBase64
+                        wireReply = replyTo?.content?.let { E2eeCrypto.encrypt(appContext, it, partnerKey) } ?: replyTo?.content
+                        encryptedFlag = true
+                    }
+                }
+            }
+
+            socket.send(
+                ChatPayload(
+                    id = msgId,
+                    chatId = chatId,
+                    senderId = me,
+                    receiverIds = receivers,
+                    content = wireContent,
+                    timestamp = now,
+                    status = MessageStatus.SENDING,
+                    type = "TEXT",
+                    mediaType = mediaType,
+                    mediaBase64 = wireMedia,
+                    durationSec = durationSec,
+                    replyToId = replyTo?.id,
+                    replyToText = wireReply,
+                    isGroup = chat.isGroup,
+                    groupName = if (chat.isGroup) chat.title else null,
+                    isEncrypted = encryptedFlag
+                )
+            )
         }
     }
 
@@ -440,6 +481,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private suspend fun handleIncoming(payload: ChatPayload) {
         val me = _profile.value.phoneNumber
+        val server = _profile.value.serverHost
         val resolvedChatId = if (payload.isGroup) payload.chatId else payload.senderId
         when (payload.type) {
             "PRESENCE" -> _onlineUsers.update { if (payload.content == "ONLINE") it + payload.senderId else it - payload.senderId }
@@ -461,17 +503,32 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _activeCall.update { it?.copy(status = CallStatus.CONNECTING) }
                 rtcManager.onRemoteAnswer(payload.content)
             }
-            "CALL_ICE" -> {
-                rtcManager.addRemoteIceCandidate(IceCandidate(payload.sdpMid, payload.sdpMLineIndex, payload.content))
-            }
+            "CALL_ICE" -> rtcManager.addRemoteIceCandidate(IceCandidate(payload.sdpMid, payload.sdpMLineIndex, payload.content))
             "CALL_END" -> endCall(sendSignal = false)
             "TEXT" -> {
+                var plainContent = payload.content
+                var plainMedia = payload.mediaBase64
+                var plainReply = payload.replyToText
+
+                if (payload.isEncrypted) {
+                    val senderKey = socket.fetchPublicKey(server, payload.senderId)
+                    plainContent = if (!senderKey.isNullOrBlank()) {
+                        E2eeCrypto.decrypt(appContext, payload.content, senderKey) ?: "🔒 Unable to decrypt message"
+                    } else "🔒 Encrypted message"
+                    plainMedia = if (!senderKey.isNullOrBlank() && payload.mediaBase64 != null) {
+                        E2eeCrypto.decrypt(appContext, payload.mediaBase64, senderKey)
+                    } else payload.mediaBase64
+                    plainReply = if (!senderKey.isNullOrBlank() && payload.replyToText != null) {
+                        E2eeCrypto.decrypt(appContext, payload.replyToText, senderKey)
+                    } else payload.replyToText
+                }
+
                 val existingChat = dao.getChat(resolvedChatId)
                 val isOpen = _activeChatId.value == resolvedChatId
                 val unread = if (isOpen) 0 else (existingChat?.unreadCount ?: 0) + 1
                 val membersCsv = if (payload.isGroup) (payload.receiverIds + payload.senderId).distinct().joinToString(",") else payload.senderId
-                dao.upsertChat(ChatEntity(resolvedChatId, payload.groupName ?: existingChat?.title ?: payload.senderId, payload.isGroup, membersCsv, payload.content, payload.timestamp, unread))
-                dao.upsertMessage(MessageEntity(payload.id, resolvedChatId, payload.senderId, payload.content, payload.timestamp, MessageStatus.DELIVERED, payload.mediaType, payload.mediaBase64, payload.durationSec, payload.replyToId, payload.replyToText))
+                dao.upsertChat(ChatEntity(resolvedChatId, payload.groupName ?: existingChat?.title ?: payload.senderId, payload.isGroup, membersCsv, plainContent, payload.timestamp, unread))
+                dao.upsertMessage(MessageEntity(payload.id, resolvedChatId, payload.senderId, plainContent, payload.timestamp, MessageStatus.DELIVERED, payload.mediaType, plainMedia, payload.durationSec, payload.replyToId, plainReply))
                 if (isOpen && _profile.value.readReceipts) {
                     socket.send(payload.copy(id = UUID.randomUUID().toString(), senderId = me, receiverIds = listOf(payload.senderId), type = "ACK_READ"))
                 }
