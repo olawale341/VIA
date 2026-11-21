@@ -12,6 +12,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
 import kotlinx.coroutines.launch
+import org.webrtc.IceCandidate
+import org.webrtc.SurfaceViewRenderer
 import java.util.UUID
 
 @OptIn(ExperimentalCoroutinesApi::class)
@@ -46,6 +48,57 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _activeCall = MutableStateFlow<ActiveCallUiState?>(null)
     val activeCall: StateFlow<ActiveCallUiState?> = _activeCall.asStateFlow()
+
+    private var pendingIncomingOfferSdp: String? = null
+
+    val rtcManager: WebRtcManager by lazy {
+        WebRtcManager(
+            context = appContext,
+            onLocalSdpReady = { isOffer, sdp ->
+                val call = _activeCall.value ?: return@WebRtcManager
+                val me = _profile.value.phoneNumber
+                viewModelScope.launch {
+                    socket.send(
+                        ChatPayload(
+                            id = UUID.randomUUID().toString(),
+                            chatId = call.partnerId,
+                            senderId = me,
+                            receiverIds = listOf(call.partnerId),
+                            content = sdp,
+                            timestamp = System.currentTimeMillis(),
+                            type = if (isOffer) "CALL_OFFER" else "CALL_ANSWER",
+                            callVideo = call.isVideo
+                        )
+                    )
+                }
+            },
+            onIceCandidateReady = { ice ->
+                val call = _activeCall.value ?: return@WebRtcManager
+                val me = _profile.value.phoneNumber
+                viewModelScope.launch {
+                    socket.send(
+                        ChatPayload(
+                            id = UUID.randomUUID().toString(),
+                            chatId = call.partnerId,
+                            senderId = me,
+                            receiverIds = listOf(call.partnerId),
+                            content = ice.sdp,
+                            timestamp = System.currentTimeMillis(),
+                            type = "CALL_ICE",
+                            sdpMid = ice.sdpMid,
+                            sdpMLineIndex = ice.sdpMLineIndex
+                        )
+                    )
+                }
+            },
+            onConnected = {
+                _activeCall.update { it?.copy(status = CallStatus.CONNECTED) }
+            },
+            onClosed = {
+                if (_activeCall.value != null) endCall(sendSignal = false)
+            }
+        )
+    }
 
     private val _phoneContacts = MutableStateFlow<List<PhoneContact>>(emptyList())
     val phoneContacts: StateFlow<List<PhoneContact>> = _phoneContacts.asStateFlow()
@@ -188,10 +241,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun logOut() {
+        rtcManager.close()
         socket.stop()
         prefs.clear()
         _profile.value = UserProfile()
         _activeChatId.value = null
+        _activeCall.value = null
         _onboardingStep.value = OnboardingStep.WELCOME
         viewModelScope.launch {
             dao.clearAllMessages()
@@ -226,16 +281,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (clean.isBlank() || clean == me) return
         viewModelScope.launch {
             if (dao.getChat(clean) == null) {
-                dao.upsertChat(
-                    ChatEntity(
-                        chatId = clean,
-                        title = partnerName?.takeIf { it.isNotBlank() } ?: clean,
-                        isGroup = false,
-                        memberIdsCsv = clean,
-                        lastMessage = "Tap to start chatting",
-                        lastTimestamp = System.currentTimeMillis()
-                    )
-                )
+                dao.upsertChat(ChatEntity(clean, partnerName?.takeIf { it.isNotBlank() } ?: clean, false, clean, "Tap to start chatting", System.currentTimeMillis()))
             }
             openChat(clean)
         }
@@ -247,16 +293,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (members.size < 2 || groupName.isBlank()) return
         val groupId = "grp_${UUID.randomUUID().toString().take(8)}"
         viewModelScope.launch {
-            dao.upsertChat(
-                ChatEntity(
-                    chatId = groupId,
-                    title = groupName.trim(),
-                    isGroup = true,
-                    memberIdsCsv = members.joinToString(","),
-                    lastMessage = "You created group \"${groupName.trim()}\"",
-                    lastTimestamp = System.currentTimeMillis()
-                )
-            )
+            dao.upsertChat(ChatEntity(groupId, groupName.trim(), true, members.joinToString(","), "You created group \"${groupName.trim()}\"", System.currentTimeMillis()))
             openChat(groupId)
         }
     }
@@ -297,14 +334,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val receivers = chat.memberIdsCsv.split(",").filter { it.isNotBlank() && it != me }
             val msgId = UUID.randomUUID().toString()
             val now = System.currentTimeMillis()
-
-            dao.upsertMessage(
-                MessageEntity(msgId, chatId, me, content, now, MessageStatus.SENDING, mediaType, mediaBase64, durationSec, replyTo?.id, replyTo?.content)
-            )
+            dao.upsertMessage(MessageEntity(msgId, chatId, me, content, now, MessageStatus.SENDING, mediaType, mediaBase64, durationSec, replyTo?.id, replyTo?.content))
             dao.upsertChat(chat.copy(lastMessage = content, lastTimestamp = now))
-            socket.send(
-                ChatPayload(msgId, chatId, me, receivers, content, now, MessageStatus.SENDING, "TEXT", mediaType, mediaBase64, durationSec, replyTo?.id, replyTo?.content, isGroup = chat.isGroup, groupName = if (chat.isGroup) chat.title else null)
-            )
+            socket.send(ChatPayload(msgId, chatId, me, receivers, content, now, MessageStatus.SENDING, "TEXT", mediaType, mediaBase64, durationSec, replyTo?.id, replyTo?.content, isGroup = chat.isGroup, groupName = if (chat.isGroup) chat.title else null))
         }
     }
 
@@ -351,11 +383,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun markStatusViewed(id: String) { viewModelScope.launch { dao.markStatusViewed(id) } }
 
     fun startCall(partnerId: String, title: String, isVideo: Boolean) {
-        _activeCall.value = ActiveCallUiState(partnerId, title, isVideo)
+        _activeCall.value = ActiveCallUiState(partnerId, title, isVideo, CallStatus.OUTGOING_RINGING, isMuted = false, isSpeaker = isVideo)
         viewModelScope.launch { dao.insertCall(CallLogEntity(UUID.randomUUID().toString(), partnerId, title, System.currentTimeMillis(), isVideo)) }
+        rtcManager.startOutgoingCall(isVideo)
     }
 
-    fun endCall() { _activeCall.value = null }
+    fun acceptIncomingCall() {
+        val call = _activeCall.value ?: return
+        val offerSdp = pendingIncomingOfferSdp ?: return
+        _activeCall.value = call.copy(status = CallStatus.CONNECTING)
+        rtcManager.answerIncomingCall(offerSdp, call.isVideo)
+    }
+
+    fun toggleCallMute() {
+        _activeCall.update { current ->
+            if (current == null) null else {
+                val next = !current.isMuted
+                rtcManager.setMuted(next)
+                current.copy(isMuted = next)
+            }
+        }
+    }
+
+    fun toggleCallSpeaker() {
+        _activeCall.update { current ->
+            if (current == null) null else {
+                val next = !current.isSpeaker
+                rtcManager.setSpeakerphone(next)
+                current.copy(isSpeaker = next)
+            }
+        }
+    }
+
+    fun attachCallRenderers(local: SurfaceViewRenderer?, remote: SurfaceViewRenderer?) = rtcManager.attachRenderers(local, remote)
+    fun detachCallRenderers() = rtcManager.detachRenderers()
+
+    fun endCall() = endCall(sendSignal = true)
+
+    fun endCall(sendSignal: Boolean) {
+        val current = _activeCall.value
+        if (sendSignal && current != null) {
+            val me = _profile.value.phoneNumber
+            viewModelScope.launch {
+                socket.send(ChatPayload(UUID.randomUUID().toString(), current.partnerId, me, listOf(current.partnerId), "", System.currentTimeMillis(), type = "CALL_END"))
+            }
+        }
+        pendingIncomingOfferSdp = null
+        rtcManager.close()
+        _activeCall.value = null
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        rtcManager.close()
+    }
 
     private suspend fun handleIncoming(payload: ChatPayload) {
         val me = _profile.value.phoneNumber
@@ -370,6 +451,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             }
             "REACTION" -> dao.updateReaction(payload.id, payload.reaction)
             "DELETE" -> dao.markDeleted(payload.id)
+            "CALL_OFFER" -> {
+                pendingIncomingOfferSdp = payload.content
+                val title = dao.getChat(payload.senderId)?.title ?: payload.senderId
+                dao.insertCall(CallLogEntity(UUID.randomUUID().toString(), payload.senderId, title, System.currentTimeMillis(), payload.callVideo, isIncoming = true))
+                _activeCall.value = ActiveCallUiState(payload.senderId, title, payload.callVideo, CallStatus.INCOMING_RINGING, isMuted = false, isSpeaker = payload.callVideo)
+            }
+            "CALL_ANSWER" -> {
+                _activeCall.update { it?.copy(status = CallStatus.CONNECTING) }
+                rtcManager.onRemoteAnswer(payload.content)
+            }
+            "CALL_ICE" -> {
+                rtcManager.addRemoteIceCandidate(IceCandidate(payload.sdpMid, payload.sdpMLineIndex, payload.content))
+            }
+            "CALL_END" -> endCall(sendSignal = false)
             "TEXT" -> {
                 val existingChat = dao.getChat(resolvedChatId)
                 val isOpen = _activeChatId.value == resolvedChatId
