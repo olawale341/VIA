@@ -31,8 +31,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _pendingPhone = MutableStateFlow("")
     val pendingPhone: StateFlow<String> = _pendingPhone.asStateFlow()
 
+    private val _pendingEmail = MutableStateFlow("")
+    val pendingEmail: StateFlow<String> = _pendingEmail.asStateFlow()
+
     private val _otpError = MutableStateFlow<String?>(null)
     val otpError: StateFlow<String?> = _otpError.asStateFlow()
+
+    private val _isAuthLoading = MutableStateFlow(false)
+    val isAuthLoading: StateFlow<Boolean> = _isAuthLoading.asStateFlow()
 
     private val _activeChatId = MutableStateFlow<String?>(null)
     val activeChatId: StateFlow<String?> = _activeChatId.asStateFlow()
@@ -81,24 +87,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _onboardingStep.value = OnboardingStep.PHONE
     }
 
-    fun submitPhone(dialCode: String, localNumber: String) {
+    fun submitPhone(dialCode: String, localNumber: String, email: String) {
         val digits = localNumber.filter { it.isDigit() }.dropWhile { it == '0' }
-        if (digits.length < 6) return
-        _pendingPhone.value = "$dialCode$digits"
+        val cleanEmail = email.trim()
+        if (digits.length < 6 || !cleanEmail.contains("@")) {
+            _otpError.value = "Enter a valid phone number and email address."
+            return
+        }
+        val fullPhone = "$dialCode$digits"
+        _pendingPhone.value = fullPhone
+        _pendingEmail.value = cleanEmail
         _otpError.value = null
-        _onboardingStep.value = OnboardingStep.OTP
+        _isAuthLoading.value = true
+
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = socket.requestOtp(_profile.value.serverHost, fullPhone, cleanEmail)
+            _isAuthLoading.value = false
+            if (res.ok) {
+                _onboardingStep.value = OnboardingStep.OTP
+            } else {
+                _otpError.value = res.message
+            }
+        }
+    }
+
+    fun resendOtp() {
+        val phone = _pendingPhone.value
+        val email = _pendingEmail.value
+        if (phone.isBlank() || email.isBlank()) return
+        _otpError.value = null
+        _isAuthLoading.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = socket.requestOtp(_profile.value.serverHost, phone, email)
+            _isAuthLoading.value = false
+            if (!res.ok) _otpError.value = res.message
+        }
     }
 
     fun backToPhone() {
+        _otpError.value = null
         _onboardingStep.value = OnboardingStep.PHONE
     }
 
     fun verifyOtp(code: String) {
-        if (code.trim() == "123456") {
-            _otpError.value = null
-            _onboardingStep.value = OnboardingStep.PROFILE
-        } else {
-            _otpError.value = "Invalid code. Enter 123456 (Pre-Firebase test mode)"
+        val phone = _pendingPhone.value
+        _otpError.value = null
+        _isAuthLoading.value = true
+        viewModelScope.launch(Dispatchers.IO) {
+            val res = socket.verifyOtp(_profile.value.serverHost, phone, code.trim())
+            _isAuthLoading.value = false
+            if (res.ok) {
+                _onboardingStep.value = OnboardingStep.PROFILE
+            } else {
+                _otpError.value = res.message
+            }
         }
     }
 
@@ -122,7 +164,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateProfileAndServer(name: String, about: String, serverHost: String, readReceipts: Boolean, avatarUri: Uri?) {
         viewModelScope.launch(Dispatchers.IO) {
             val current = _profile.value
-            val avatarB64 = if (avatarUri != null) MediaHelper.uriToCompressedBase64(appContext, avatarUri, 360) else current.avatarBase64
+            val avatarB64 = if (avatarUri != null) MediaHelper.uriToCompressedBase64(appContext, it, 360) else current.avatarBase64
             val updated = current.copy(
                 displayName = name.trim().ifBlank { current.displayName },
                 about = about.trim().ifBlank { current.about },
