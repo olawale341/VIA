@@ -89,6 +89,15 @@ class ChatSocketClient {
         } catch (_: Exception) { }
     }
 
+    suspend fun registerFcmToken(serverHost: String, phone: String, token: String) {
+        try {
+            client.post("${httpBase(serverHost)}/profile/fcm-token") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(FcmTokenBody(phone, token)))
+            }
+        } catch (_: Exception) { }
+    }
+
     suspend fun syncContacts(serverHost: String, phones: List<String>): List<RegisteredUserDto> {
         if (phones.isEmpty()) return emptyList()
         return try {
