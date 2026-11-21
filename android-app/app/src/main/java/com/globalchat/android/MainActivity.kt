@@ -26,7 +26,9 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
     val step by vm.onboardingStep.collectAsState()
     val profile by vm.profile.collectAsState()
     val pendingPhone by vm.pendingPhone.collectAsState()
+    val pendingEmail by vm.pendingEmail.collectAsState()
     val otpError by vm.otpError.collectAsState()
+    val isAuthLoading by vm.isAuthLoading.collectAsState()
     val activeChatId by vm.activeChatId.collectAsState()
     val activeCall by vm.activeCall.collectAsState()
     val chats by vm.chats.collectAsState()
@@ -42,11 +44,18 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
 
     when (step) {
         OnboardingStep.WELCOME -> WelcomeScreen(onAgree = vm::acceptTerms)
-        OnboardingStep.PHONE -> PhoneEntryScreen(onSubmit = vm::submitPhone)
+        OnboardingStep.PHONE -> PhoneEntryScreen(
+            isLoading = isAuthLoading,
+            errorText = otpError,
+            onSubmit = vm::submitPhone
+        )
         OnboardingStep.OTP -> OtpVerificationScreen(
             phoneNumber = pendingPhone,
+            email = pendingEmail,
+            isLoading = isAuthLoading,
             errorText = otpError,
             onVerify = vm::verifyOtp,
+            onResend = vm::resendOtp,
             onWrongNumber = vm::backToPhone
         )
         OnboardingStep.PROFILE -> ProfileSetupScreen(onComplete = vm::completeProfile)
