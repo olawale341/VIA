@@ -250,12 +250,22 @@ fun HomeScreen(
                             items(phoneContacts) { c ->
                                 ListItem(
                                     leadingContent = {
-                                        Box(Modifier.size(40.dp).clip(CircleShape).background(Color(0xFFDFE5E7)), Alignment.Center) {
+                                        Box(
+                                            Modifier.size(40.dp).clip(CircleShape).background(if (c.isOnGlobalChat) Color(0xFF1DAB61) else Color(0xFFDFE5E7)),
+                                            Alignment.Center
+                                        ) {
                                             Icon(Icons.Default.Person, null, tint = Color.White)
                                         }
                                     },
                                     headlineContent = { Text(c.name, fontWeight = FontWeight.Medium) },
-                                    supportingContent = { Text(c.phoneNumber, fontSize = 12.sp) },
+                                    supportingContent = {
+                                        Text(
+                                            if (c.isOnGlobalChat) "On GlobalChat ✓ • ${c.about}" else c.phoneNumber,
+                                            fontSize = 12.sp,
+                                            color = if (c.isOnGlobalChat) Color(0xFF008069) else Color.Gray,
+                                            maxLines = 1
+                                        )
+                                    },
                                     modifier = Modifier.clickable {
                                         showContactPicker = false
                                         onStartNewChat(c.phoneNumber, c.name)
