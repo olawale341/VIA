@@ -57,4 +57,7 @@ dependencies {
     // Firebase Push Notifications (FCM)
     implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
     implementation("com.google.firebase:firebase-messaging")
+
+    // Real-Time Voice & Video Calls (WebRTC)
+    implementation("io.getstream:stream-webrtc-android:1.3.10")
 }
