@@ -1,6 +1,8 @@
 package com.globalchat.android.ui
 
 import android.app.Application
+import android.app.NotificationManager
+import android.content.Context
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
@@ -131,6 +133,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (saved.isRegistered && saved.phoneNumber.isNotBlank()) {
             socket.start(viewModelScope, saved.phoneNumber, saved.serverHost)
             syncKeysAndPush(saved.serverHost, saved.phoneNumber)
+            refreshStatuses()
         }
     }
 
@@ -138,6 +141,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val myPub = E2eeCrypto.getMyPublicKeyBase64(appContext)
             socket.uploadPublicKey(serverHost, phone, myPub)
+            val p = _profile.value
+            socket.syncProfile(serverHost, phone, p.displayName, p.about, p.avatarBase64)
         }
         try {
             FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
@@ -205,7 +210,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun completeProfile(name: String, about: String, avatarUri: Uri?) {
         viewModelScope.launch(Dispatchers.IO) {
-            val avatarB64 = avatarUri?.let { MediaHelper.uriToCompressedBase64(appContext, it, 360) }
+            val avatarB64 = avatarUri?.let { MediaHelper.uriToCompressedBase64(appContext, it, 320) }
             val updated = _profile.value.copy(
                 phoneNumber = _pendingPhone.value,
                 displayName = name.trim().ifBlank { _pendingPhone.value },
@@ -216,16 +221,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             prefs.save(updated)
             _profile.value = updated
             _onboardingStep.value = OnboardingStep.DONE
-            socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about)
+            socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about, updated.avatarBase64)
             syncKeysAndPush(updated.serverHost, updated.phoneNumber)
             socket.start(viewModelScope, updated.phoneNumber, updated.serverHost)
+            refreshStatuses()
         }
     }
 
     fun updateProfileAndServer(name: String, about: String, serverHost: String, readReceipts: Boolean, avatarUri: Uri?) {
         viewModelScope.launch(Dispatchers.IO) {
             val current = _profile.value
-            val avatarB64 = if (avatarUri != null) MediaHelper.uriToCompressedBase64(appContext, avatarUri, 360) else current.avatarBase64
+            val avatarB64 = if (avatarUri != null) MediaHelper.uriToCompressedBase64(appContext, avatarUri, 320) else current.avatarBase64
             val updated = current.copy(
                 displayName = name.trim().ifBlank { current.displayName },
                 about = about.trim().ifBlank { current.about },
@@ -235,7 +241,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             prefs.save(updated)
             _profile.value = updated
-            socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about)
+            socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about, updated.avatarBase64)
             syncKeysAndPush(updated.serverHost, updated.phoneNumber)
             socket.start(viewModelScope, updated.phoneNumber, updated.serverHost)
         }
@@ -271,18 +277,40 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 .associateBy { it.phone }
             _phoneContacts.value = normalized.map { c ->
                 val reg = registered[c.phoneNumber]
-                if (reg != null) c.copy(isOnGlobalChat = true, about = reg.about) else c
+                if (reg != null) c.copy(isOnGlobalChat = true, about = reg.about, avatarBase64 = reg.avatarBase64)
+                else c
             }.sortedByDescending { it.isOnGlobalChat }
+
+            // Also update avatars on existing chats
+            registered.values.forEach { reg ->
+                dao.getChat(reg.phone)?.let { existing ->
+                    if (reg.avatarBase64 != null && existing.avatarBase64 != reg.avatarBase64) {
+                        dao.upsertChat(existing.copy(avatarBase64 = reg.avatarBase64))
+                    }
+                }
+            }
         }
     }
 
-    fun startChat(partnerPhone: String, partnerName: String? = null) {
+    fun startChat(partnerPhone: String, partnerName: String? = null, avatarBase64: String? = null) {
         val clean = partnerPhone.replace(Regex("[\\s()-]"), "")
         val me = _profile.value.phoneNumber
         if (clean.isBlank() || clean == me) return
-        viewModelScope.launch {
-            if (dao.getChat(clean) == null) {
-                dao.upsertChat(ChatEntity(clean, partnerName?.takeIf { it.isNotBlank() } ?: clean, false, clean, "Tap to start chatting", System.currentTimeMillis()))
+        viewModelScope.launch(Dispatchers.IO) {
+            val existing = dao.getChat(clean)
+            if (existing == null) {
+                val remote = if (avatarBase64 == null) socket.fetchProfile(_profile.value.serverHost, clean) else null
+                dao.upsertChat(
+                    ChatEntity(
+                        chatId = clean,
+                        title = partnerName?.takeIf { it.isNotBlank() } ?: remote?.displayName?.takeIf { it.isNotBlank() } ?: clean,
+                        isGroup = false,
+                        memberIdsCsv = clean,
+                        lastMessage = "Tap to start chatting",
+                        lastTimestamp = System.currentTimeMillis(),
+                        avatarBase64 = avatarBase64 ?: remote?.avatarBase64
+                    )
+                )
             }
             openChat(clean)
         }
@@ -301,10 +329,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun openChat(chatId: String) {
         _activeChatId.value = chatId
-        viewModelScope.launch {
+        viewModelScope.launch(Dispatchers.IO) {
             dao.clearUnread(chatId)
-            if (!_profile.value.readReceipts) return@launch
             val chat = dao.getChat(chatId) ?: return@launch
+            if (!chat.isGroup && chat.avatarBase64 == null) {
+                socket.fetchProfile(_profile.value.serverHost, chatId)?.let { remote ->
+                    dao.upsertChat(chat.copy(
+                        title = if (chat.title == chatId && remote.displayName.isNotBlank()) remote.displayName else chat.title,
+                        avatarBase64 = remote.avatarBase64
+                    ))
+                }
+            }
+            if (!_profile.value.readReceipts) return@launch
             val me = _profile.value.phoneNumber
             val receivers = chat.memberIdsCsv.split(",").filter { it.isNotBlank() && it != me }
             socket.send(ChatPayload(UUID.randomUUID().toString(), chatId, me, receivers, "", System.currentTimeMillis(), type = "ACK_READ", isGroup = chat.isGroup))
@@ -417,19 +453,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val img = imageUri?.let { MediaHelper.uriToCompressedBase64(appContext, it, 900) }
             if (caption.isBlank() && img == null) return@launch
-            dao.insertStatus(StatusEntity(UUID.randomUUID().toString(), "My status", _profile.value.phoneNumber, caption.trim(), img, bgColorHex, System.currentTimeMillis()))
+            val p = _profile.value
+            val id = UUID.randomUUID().toString()
+            val now = System.currentTimeMillis()
+            dao.insertStatus(StatusEntity(id, "My status", p.phoneNumber, p.avatarBase64, caption.trim(), img, bgColorHex, now))
+            socket.postStatus(
+                p.serverHost,
+                StatusDto(id, p.phoneNumber, p.displayName.ifBlank { p.phoneNumber }, p.avatarBase64, caption.trim(), img, bgColorHex, now)
+            )
+        }
+    }
+
+    fun refreshStatuses() {
+        val me = _profile.value.phoneNumber
+        if (me.isBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            socket.fetchStatuses(_profile.value.serverHost).forEach { s ->
+                val existing = dao.getStatus(s.id)
+                val displayOwner = if (s.ownerPhone == me) "My status" else s.ownerName
+                dao.insertStatus(
+                    StatusEntity(
+                        id = s.id,
+                        ownerName = displayOwner,
+                        ownerId = s.ownerPhone,
+                        ownerAvatarBase64 = s.ownerAvatar,
+                        caption = s.caption,
+                        imageBase64 = s.imageBase64,
+                        bgColorHex = s.bgColorHex,
+                        timestamp = s.timestamp,
+                        viewed = existing?.viewed ?: (s.ownerPhone == me)
+                    )
+                )
+            }
         }
     }
 
     fun markStatusViewed(id: String) { viewModelScope.launch { dao.markStatusViewed(id) } }
 
     fun startCall(partnerId: String, title: String, isVideo: Boolean) {
-        _activeCall.value = ActiveCallUiState(partnerId, title, isVideo, CallStatus.OUTGOING_RINGING, isMuted = false, isSpeaker = isVideo)
-        viewModelScope.launch { dao.insertCall(CallLogEntity(UUID.randomUUID().toString(), partnerId, title, System.currentTimeMillis(), isVideo)) }
-        rtcManager.startOutgoingCall(isVideo)
+        viewModelScope.launch {
+            val avatar = dao.getChat(partnerId)?.avatarBase64
+            _activeCall.value = ActiveCallUiState(partnerId, title, isVideo, CallStatus.OUTGOING_RINGING, isMuted = false, isSpeaker = isVideo, partnerAvatarBase64 = avatar)
+            dao.insertCall(CallLogEntity(UUID.randomUUID().toString(), partnerId, title, System.currentTimeMillis(), isVideo))
+            rtcManager.startOutgoingCall(isVideo)
+        }
     }
 
     fun acceptIncomingCall() {
+        cancelCallNotification()
         val call = _activeCall.value ?: return
         val offerSdp = pendingIncomingOfferSdp ?: return
         _activeCall.value = call.copy(status = CallStatus.CONNECTING)
@@ -462,6 +533,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun endCall() = endCall(sendSignal = true)
 
     fun endCall(sendSignal: Boolean) {
+        cancelCallNotification()
         val current = _activeCall.value
         if (sendSignal && current != null) {
             val me = _profile.value.phoneNumber
@@ -472,6 +544,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         pendingIncomingOfferSdp = null
         rtcManager.close()
         _activeCall.value = null
+    }
+
+    private fun cancelCallNotification() {
+        try {
+            val nm = appContext.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(9001)
+        } catch (_: Exception) { }
     }
 
     override fun onCleared() {
@@ -495,9 +574,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             "DELETE" -> dao.markDeleted(payload.id)
             "CALL_OFFER" -> {
                 pendingIncomingOfferSdp = payload.content
-                val title = dao.getChat(payload.senderId)?.title ?: payload.senderId
+                val localChat = dao.getChat(payload.senderId)
+                val remoteUser = if (localChat?.avatarBase64 == null) socket.fetchProfile(server, payload.senderId) else null
+                val title = localChat?.title ?: remoteUser?.displayName?.ifBlank { payload.senderId } ?: payload.senderId
+                val avatar = localChat?.avatarBase64 ?: remoteUser?.avatarBase64
                 dao.insertCall(CallLogEntity(UUID.randomUUID().toString(), payload.senderId, title, System.currentTimeMillis(), payload.callVideo, isIncoming = true))
-                _activeCall.value = ActiveCallUiState(payload.senderId, title, payload.callVideo, CallStatus.INCOMING_RINGING, isMuted = false, isSpeaker = payload.callVideo)
+                _activeCall.value = ActiveCallUiState(payload.senderId, title, payload.callVideo, CallStatus.INCOMING_RINGING, isMuted = false, isSpeaker = payload.callVideo, partnerAvatarBase64 = avatar)
             }
             "CALL_ANSWER" -> {
                 _activeCall.update { it?.copy(status = CallStatus.CONNECTING) }
@@ -524,10 +606,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
 
                 val existingChat = dao.getChat(resolvedChatId)
+                val remoteProfile = if (!payload.isGroup && existingChat?.avatarBase64 == null) {
+                    socket.fetchProfile(server, payload.senderId)
+                } else null
+                val resolvedTitle = payload.groupName
+                    ?: existingChat?.title?.takeIf { it != payload.senderId }
+                    ?: remoteProfile?.displayName?.takeIf { it.isNotBlank() }
+                    ?: payload.senderId
+                val resolvedAvatar = existingChat?.avatarBase64 ?: remoteProfile?.avatarBase64
+
                 val isOpen = _activeChatId.value == resolvedChatId
                 val unread = if (isOpen) 0 else (existingChat?.unreadCount ?: 0) + 1
                 val membersCsv = if (payload.isGroup) (payload.receiverIds + payload.senderId).distinct().joinToString(",") else payload.senderId
-                dao.upsertChat(ChatEntity(resolvedChatId, payload.groupName ?: existingChat?.title ?: payload.senderId, payload.isGroup, membersCsv, plainContent, payload.timestamp, unread))
+                dao.upsertChat(ChatEntity(resolvedChatId, resolvedTitle, payload.isGroup, membersCsv, plainContent, payload.timestamp, unread, resolvedAvatar))
                 dao.upsertMessage(MessageEntity(payload.id, resolvedChatId, payload.senderId, plainContent, payload.timestamp, MessageStatus.DELIVERED, payload.mediaType, plainMedia, payload.durationSec, payload.replyToId, plainReply))
                 if (isOpen && _profile.value.readReceipts) {
                     socket.send(payload.copy(id = UUID.randomUUID().toString(), senderId = me, receiverIds = listOf(payload.senderId), type = "ACK_READ"))
