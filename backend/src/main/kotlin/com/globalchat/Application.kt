@@ -68,7 +68,7 @@ data class OtpVerifyBody(val phone: String, val code: String)
 data class OtpApiResult(val ok: Boolean, val message: String)
 
 @Serializable
-data class ProfileSyncBody(val phone: String, val displayName: String, val about: String)
+data class ProfileSyncBody(val phone: String, val displayName: String, val about: String, val avatarBase64: String? = null)
 
 @Serializable
 data class FcmTokenBody(val phone: String, val token: String)
@@ -77,16 +77,31 @@ data class FcmTokenBody(val phone: String, val token: String)
 data class PublicKeyBody(val phone: String, val publicKey: String)
 
 @Serializable
-data class PublicKeyResponse(val phone: String, val publicKey: String)
+data class PublicKeyResponse(val phone: String, val publicKey: String = "")
 
 @Serializable
 data class ContactSyncRequest(val phones: List<String>)
 
 @Serializable
-data class RegisteredUserDto(val phone: String, val displayName: String, val about: String)
+data class RegisteredUserDto(val phone: String, val displayName: String, val about: String, val avatarBase64: String? = null)
 
 @Serializable
-data class ContactSyncResponse(val users: List<RegisteredUserDto>)
+data class ContactSyncResponse(val users: List<RegisteredUserDto> = emptyList())
+
+@Serializable
+data class StatusDto(
+    val id: String,
+    val ownerPhone: String,
+    val ownerName: String,
+    val ownerAvatar: String? = null,
+    val caption: String,
+    val imageBase64: String? = null,
+    val bgColorHex: Long = 0xFF005C4B,
+    val timestamp: Long
+)
+
+@Serializable
+data class StatusListResponse(val statuses: List<StatusDto> = emptyList())
 
 @Serializable
 data class BrevoSender(val name: String, val email: String)
@@ -109,6 +124,7 @@ private val httpClient = HttpClient(CIO)
 private val random = SecureRandom()
 private val otpStore = ConcurrentHashMap<String, PendingOtp>()
 private val activeConnections = ConcurrentHashMap<String, DefaultWebSocketServerSession>()
+private val pendingCalls = ConcurrentHashMap<String, ChatPayload>()
 
 object FcmSender {
     private var ready = false
@@ -141,6 +157,23 @@ object FcmSender {
             FirebaseMessaging.getInstance().send(msg)
         } catch (e: Exception) {
             println("FCM SEND ERROR: ${e.localizedMessage}")
+        }
+    }
+
+    fun sendIncomingCallData(token: String, callerId: String, callerName: String, isVideo: Boolean) {
+        if (!ready || token.isBlank()) return
+        try {
+            val msg = Message.builder()
+                .setToken(token)
+                .putData("type", "CALL_OFFER")
+                .putData("callerId", callerId)
+                .putData("callerName", callerName)
+                .putData("callVideo", isVideo.toString())
+                .setAndroidConfig(AndroidConfig.builder().setPriority(AndroidConfig.Priority.HIGH).build())
+                .build()
+            FirebaseMessaging.getInstance().send(msg)
+        } catch (e: Exception) {
+            println("FCM CALL ERROR: ${e.localizedMessage}")
         }
     }
 }
@@ -180,12 +213,14 @@ object Db {
                         email TEXT NOT NULL DEFAULT '',
                         display_name TEXT NOT NULL DEFAULT '',
                         about TEXT NOT NULL DEFAULT 'Hey there! I am using GlobalChat.',
+                        avatar_base64 TEXT NOT NULL DEFAULT '',
                         fcm_token TEXT NOT NULL DEFAULT '',
                         public_key TEXT NOT NULL DEFAULT '',
                         updated_at BIGINT NOT NULL
                     )
                     """.trimIndent()
                 )
+                st.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_base64 TEXT NOT NULL DEFAULT ''")
                 st.execute(
                     """
                     CREATE TABLE IF NOT EXISTS offline_messages (
@@ -196,28 +231,64 @@ object Db {
                     )
                     """.trimIndent()
                 )
+                st.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS statuses (
+                        id TEXT PRIMARY KEY,
+                        owner_phone TEXT NOT NULL,
+                        owner_name TEXT NOT NULL,
+                        owner_avatar TEXT NOT NULL DEFAULT '',
+                        caption TEXT NOT NULL DEFAULT '',
+                        image_base64 TEXT NOT NULL DEFAULT '',
+                        bg_color BIGINT NOT NULL DEFAULT 4278213707,
+                        created_at BIGINT NOT NULL
+                    )
+                    """.trimIndent()
+                )
             }
         }
     }
 
-    fun upsertUser(phone: String, email: String?, name: String?, about: String?) {
+    fun upsertUser(phone: String, email: String?, name: String?, about: String?, avatar: String?) {
         withConn { conn ->
             conn.prepareStatement(
                 """
-                INSERT INTO users (phone, email, display_name, about, updated_at)
-                VALUES (?, COALESCE(?, ''), COALESCE(?, ?), COALESCE(?, 'Hey there! I am using GlobalChat.'), ?)
+                INSERT INTO users (phone, email, display_name, about, avatar_base64, updated_at)
+                VALUES (?, COALESCE(?, ''), COALESCE(?, ?), COALESCE(?, 'Hey there! I am using GlobalChat.'), COALESCE(?, ''), ?)
                 ON CONFLICT (phone) DO UPDATE SET
                     email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE users.email END,
                     display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE users.display_name END,
                     about = CASE WHEN EXCLUDED.about <> '' THEN EXCLUDED.about ELSE users.about END,
+                    avatar_base64 = CASE WHEN EXCLUDED.avatar_base64 <> '' THEN EXCLUDED.avatar_base64 ELSE users.avatar_base64 END,
                     updated_at = EXCLUDED.updated_at
                 """.trimIndent()
             ).use { ps ->
                 ps.setString(1, phone); ps.setString(2, email); ps.setString(3, name)
-                ps.setString(4, phone); ps.setString(5, about); ps.setLong(6, System.currentTimeMillis())
+                ps.setString(4, phone); ps.setString(5, about); ps.setString(6, avatar)
+                ps.setLong(7, System.currentTimeMillis())
                 ps.executeUpdate()
             }
         }
+    }
+
+    fun getUser(phone: String): RegisteredUserDto? {
+        var dto: RegisteredUserDto? = null
+        withConn { conn ->
+            conn.prepareStatement("SELECT phone, display_name, about, avatar_base64 FROM users WHERE phone = ? LIMIT 1").use { ps ->
+                ps.setString(1, phone)
+                ps.executeQuery().use { rs ->
+                    if (rs.next()) {
+                        dto = RegisteredUserDto(
+                            phone = rs.getString("phone"),
+                            displayName = rs.getString("display_name"),
+                            about = rs.getString("about"),
+                            avatarBase64 = rs.getString("avatar_base64")?.takeIf { it.isNotBlank() }
+                        )
+                    }
+                }
+            }
+        }
+        return dto
     }
 
     fun saveFcmToken(phone: String, token: String) {
@@ -266,37 +337,70 @@ object Db {
         return token
     }
 
-    fun getDisplayName(phone: String): String {
-        var name = phone
-        withConn { conn ->
-            conn.prepareStatement("SELECT display_name FROM users WHERE phone = ? LIMIT 1").use { ps ->
-                ps.setString(1, phone)
-                ps.executeQuery().use { rs ->
-                    if (rs.next()) {
-                        val dbName = rs.getString("display_name")
-                        if (!dbName.isNullOrBlank()) name = dbName
-                    }
-                }
-            }
-        }
-        return name
-    }
+    fun getDisplayName(phone: String): String = getUser(phone)?.displayName?.ifBlank { phone } ?: phone
 
     fun findRegisteredUsers(phones: List<String>): List<RegisteredUserDto> {
         if (phones.isEmpty()) return emptyList()
         val results = mutableListOf<RegisteredUserDto>()
         withConn { conn ->
             val placeholders = phones.joinToString(",") { "?" }
-            conn.prepareStatement("SELECT phone, display_name, about FROM users WHERE phone IN ($placeholders)").use { ps ->
+            conn.prepareStatement("SELECT phone, display_name, about, avatar_base64 FROM users WHERE phone IN ($placeholders)").use { ps ->
                 phones.forEachIndexed { idx, p -> ps.setString(idx + 1, p) }
                 ps.executeQuery().use { rs ->
                     while (rs.next()) {
-                        results.add(RegisteredUserDto(rs.getString("phone"), rs.getString("display_name"), rs.getString("about")))
+                        results.add(
+                            RegisteredUserDto(
+                                rs.getString("phone"),
+                                rs.getString("display_name"),
+                                rs.getString("about"),
+                                rs.getString("avatar_base64")?.takeIf { it.isNotBlank() }
+                            )
+                        )
                     }
                 }
             }
         }
         return results
+    }
+
+    fun saveStatus(s: StatusDto) {
+        withConn { conn ->
+            conn.prepareStatement(
+                "INSERT INTO statuses (id, owner_phone, owner_name, owner_avatar, caption, image_base64, bg_color, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (id) DO NOTHING"
+            ).use { ps ->
+                ps.setString(1, s.id); ps.setString(2, s.ownerPhone); ps.setString(3, s.ownerName)
+                ps.setString(4, s.ownerAvatar ?: ""); ps.setString(5, s.caption)
+                ps.setString(6, s.imageBase64 ?: ""); ps.setLong(7, s.bgColorHex); ps.setLong(8, s.timestamp)
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    fun getRecentStatuses(): List<StatusDto> {
+        val cutoff = System.currentTimeMillis() - 86_400_000L
+        val list = mutableListOf<StatusDto>()
+        withConn { conn ->
+            conn.prepareStatement("SELECT * FROM statuses WHERE created_at >= ? ORDER BY created_at DESC LIMIT 100").use { ps ->
+                ps.setLong(1, cutoff)
+                ps.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        list.add(
+                            StatusDto(
+                                id = rs.getString("id"),
+                                ownerPhone = rs.getString("owner_phone"),
+                                ownerName = rs.getString("owner_name"),
+                                ownerAvatar = rs.getString("owner_avatar")?.takeIf { it.isNotBlank() },
+                                caption = rs.getString("caption"),
+                                imageBase64 = rs.getString("image_base64")?.takeIf { it.isNotBlank() },
+                                bgColorHex = rs.getLong("bg_color"),
+                                timestamp = rs.getLong("created_at")
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        return list
     }
 
     fun queueOfflineMessage(targetPhone: String, payload: ChatPayload) {
@@ -386,7 +490,7 @@ fun Application.module() {
             val valid = pending != null && System.currentTimeMillis() <= pending.expiresAtMs && pending.code == body.code.trim()
             if (valid) {
                 otpStore.remove(phone)
-                Db.upsertUser(phone, pending!!.email, null, null)
+                Db.upsertUser(phone, pending!!.email, null, null, null)
                 call.respondText(json.encodeToString(OtpApiResult(true, "Verified")), ContentType.Application.Json)
             } else {
                 call.respondText(json.encodeToString(OtpApiResult(false, "Invalid or expired code")), ContentType.Application.Json, HttpStatusCode.Unauthorized)
@@ -395,8 +499,14 @@ fun Application.module() {
 
         post("/profile/sync") {
             val body = json.decodeFromString<ProfileSyncBody>(call.receiveText())
-            Db.upsertUser(body.phone.trim(), null, body.displayName.trim(), body.about.trim())
+            Db.upsertUser(body.phone.trim(), null, body.displayName.trim(), body.about.trim(), body.avatarBase64)
             call.respondText(json.encodeToString(OtpApiResult(true, "Profile synced")), ContentType.Application.Json)
+        }
+
+        get("/profile/{phone}") {
+            val phone = call.parameters["phone"]?.trim().orEmpty()
+            val user = Db.getUser(phone) ?: RegisteredUserDto(phone, phone, "Hey there! I am using GlobalChat.")
+            call.respondText(json.encodeToString(user), ContentType.Application.Json)
         }
 
         post("/profile/fcm-token") {
@@ -413,14 +523,22 @@ fun Application.module() {
 
         get("/keys/{phone}") {
             val phone = call.parameters["phone"]?.trim().orEmpty()
-            val key = Db.getPublicKey(phone)
-            call.respondText(json.encodeToString(PublicKeyResponse(phone, key)), ContentType.Application.Json)
+            call.respondText(json.encodeToString(PublicKeyResponse(phone, Db.getPublicKey(phone))), ContentType.Application.Json)
         }
 
         post("/contacts/sync") {
             val body = json.decodeFromString<ContactSyncRequest>(call.receiveText())
-            val found = Db.findRegisteredUsers(body.phones.distinct().take(500))
-            call.respondText(json.encodeToString(ContactSyncResponse(found)), ContentType.Application.Json)
+            call.respondText(json.encodeToString(ContactSyncResponse(Db.findRegisteredUsers(body.phones.distinct().take(500)))), ContentType.Application.Json)
+        }
+
+        post("/statuses") {
+            val s = json.decodeFromString<StatusDto>(call.receiveText())
+            Db.saveStatus(s)
+            call.respondText(json.encodeToString(OtpApiResult(true, "Status posted")), ContentType.Application.Json)
+        }
+
+        get("/statuses") {
+            call.respondText(json.encodeToString(StatusListResponse(Db.getRecentStatuses())), ContentType.Application.Json)
         }
 
         webSocket("/chat/{userId}") {
@@ -431,10 +549,18 @@ fun Application.module() {
                 sendPayload(this, ChatPayload("presence-$onlineUser", onlineUser, onlineUser, listOf(userId), "ONLINE", System.currentTimeMillis(), type = "PRESENCE"))
             }
 
+            // Deliver missed messages
             Db.drainOfflineMessages(userId).forEach { msg ->
                 sendPayload(this, msg)
                 activeConnections[msg.senderId]?.let { s ->
                     sendPayload(s, msg.copy(type = "ACK_DELIVERED", status = MessageStatus.DELIVERED, mediaBase64 = null))
+                }
+            }
+
+            // Deliver an active incoming call offer if it arrived within the last 45 seconds
+            pendingCalls.remove(userId)?.let { callOffer ->
+                if (System.currentTimeMillis() - callOffer.timestamp <= 45_000L) {
+                    sendPayload(this, callOffer)
                 }
             }
 
@@ -465,10 +591,9 @@ private suspend fun handlePayload(msg: ChatPayload) {
                     delivered = true
                 } else {
                     Db.queueOfflineMessage(targetId, msg)
-                    val fcmToken = Db.getFcmToken(targetId)
                     val title = if (msg.isGroup && !msg.groupName.isNullOrBlank()) "${msg.groupName} • $senderName" else senderName
                     val pushBody = if (msg.isEncrypted) "🔒 New encrypted message" else msg.content
-                    FcmSender.sendPush(fcmToken, title, pushBody, if (msg.isGroup) msg.chatId else msg.senderId)
+                    FcmSender.sendPush(Db.getFcmToken(targetId), title, pushBody, if (msg.isGroup) msg.chatId else msg.senderId)
                 }
             }
             if (delivered) {
@@ -485,15 +610,19 @@ private suspend fun handlePayload(msg: ChatPayload) {
         "CALL_OFFER" -> {
             val callerName by lazy { Db.getDisplayName(msg.senderId) }
             msg.receiverIds.filter { it != msg.senderId }.forEach { targetId ->
+                pendingCalls[targetId] = msg
                 val target = activeConnections[targetId]
                 if (target != null) sendPayload(target, msg)
-                else {
-                    val callKind = if (msg.callVideo) "Video" else "Voice"
-                    FcmSender.sendPush(Db.getFcmToken(targetId), "Incoming $callKind Call", "$callerName is calling you on GlobalChat", msg.senderId)
-                }
+                FcmSender.sendIncomingCallData(Db.getFcmToken(targetId), msg.senderId, callerName, msg.callVideo)
             }
         }
-        "CALL_ANSWER", "CALL_ICE", "CALL_END" -> {
+        "CALL_END" -> {
+            msg.receiverIds.filter { it != msg.senderId }.forEach { targetId ->
+                pendingCalls.remove(targetId)
+                activeConnections[targetId]?.let { sendPayload(it, msg) }
+            }
+        }
+        "CALL_ANSWER", "CALL_ICE" -> {
             msg.receiverIds.filter { it != msg.senderId }.forEach { targetId ->
                 activeConnections[targetId]?.let { sendPayload(it, msg) }
             }
