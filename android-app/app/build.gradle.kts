@@ -9,6 +9,7 @@ plugins {
 android {
     namespace = "com.globalchat.android"
     compileSdk = 37
+    compileSdkMinor = 1
 
     defaultConfig {
         applicationId = "com.globalchat.android"
