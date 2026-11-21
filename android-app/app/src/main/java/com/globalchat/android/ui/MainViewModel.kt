@@ -7,6 +7,7 @@ import androidx.lifecycle.viewModelScope
 import com.globalchat.android.data.local.*
 import com.globalchat.android.data.remote.ChatSocketClient
 import com.globalchat.android.model.*
+import com.google.firebase.messaging.FirebaseMessaging
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.*
@@ -79,7 +80,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val saved = _profile.value
         if (saved.isRegistered && saved.phoneNumber.isNotBlank()) {
             socket.start(viewModelScope, saved.phoneNumber, saved.serverHost)
+            syncFcmToken(saved.serverHost, saved.phoneNumber)
         }
+    }
+
+    private fun syncFcmToken(serverHost: String, phone: String) {
+        try {
+            FirebaseMessaging.getInstance().token.addOnSuccessListener { token ->
+                if (!token.isNullOrBlank()) {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        socket.registerFcmToken(serverHost, phone, token)
+                    }
+                }
+            }
+        } catch (_: Exception) { }
     }
 
     fun acceptTerms() { _onboardingStep.value = OnboardingStep.PHONE }
@@ -149,6 +163,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _profile.value = updated
             _onboardingStep.value = OnboardingStep.DONE
             socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about)
+            syncFcmToken(updated.serverHost, updated.phoneNumber)
             socket.start(viewModelScope, updated.phoneNumber, updated.serverHost)
         }
     }
@@ -167,6 +182,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             prefs.save(updated)
             _profile.value = updated
             socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about)
+            syncFcmToken(updated.serverHost, updated.phoneNumber)
             socket.start(viewModelScope, updated.phoneNumber, updated.serverHost)
         }
     }
