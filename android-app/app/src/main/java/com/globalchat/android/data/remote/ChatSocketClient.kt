@@ -12,10 +12,13 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 
 class ChatSocketClient {
     private val json = Json { ignoreUnknownKeys = true }
+    private val publicKeyCache = ConcurrentHashMap<String, String>()
+
     private val client = HttpClient(OkHttp) {
         install(WebSockets)
         engine {
@@ -96,6 +99,29 @@ class ChatSocketClient {
                 setBody(json.encodeToString(FcmTokenBody(phone, token)))
             }
         } catch (_: Exception) { }
+    }
+
+    suspend fun uploadPublicKey(serverHost: String, phone: String, publicKey: String) {
+        try {
+            client.post("${httpBase(serverHost)}/keys/upload") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(PublicKeyBody(phone, publicKey)))
+            }
+        } catch (_: Exception) { }
+    }
+
+    suspend fun fetchPublicKey(serverHost: String, phone: String): String? {
+        publicKeyCache[phone]?.let { return it }
+        return try {
+            val resp = client.get("${httpBase(serverHost)}/keys/${phone.encodeURLParameter()}")
+            val key = json.decodeFromString<PublicKeyResponse>(resp.bodyAsText()).publicKey
+            if (key.isNotBlank()) {
+                publicKeyCache[phone] = key
+                key
+            } else null
+        } catch (_: Exception) {
+            null
+        }
     }
 
     suspend fun syncContacts(serverHost: String, phones: List<String>): List<RegisteredUserDto> {
