@@ -54,7 +54,8 @@ data class ChatPayload(
     val groupName: String? = null,
     val callVideo: Boolean = false,
     val sdpMid: String? = null,
-    val sdpMLineIndex: Int = 0
+    val sdpMLineIndex: Int = 0,
+    val isEncrypted: Boolean = false
 )
 
 @Serializable
@@ -71,6 +72,12 @@ data class ProfileSyncBody(val phone: String, val displayName: String, val about
 
 @Serializable
 data class FcmTokenBody(val phone: String, val token: String)
+
+@Serializable
+data class PublicKeyBody(val phone: String, val publicKey: String)
+
+@Serializable
+data class PublicKeyResponse(val phone: String, val publicKey: String)
 
 @Serializable
 data class ContactSyncRequest(val phones: List<String>)
@@ -220,6 +227,32 @@ object Db {
                 ps.executeUpdate()
             }
         }
+    }
+
+    fun savePublicKey(phone: String, publicKey: String) {
+        withConn { conn ->
+            conn.prepareStatement(
+                """
+                INSERT INTO users (phone, display_name, public_key, updated_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT (phone) DO UPDATE SET public_key = EXCLUDED.public_key, updated_at = EXCLUDED.updated_at
+                """.trimIndent()
+            ).use { ps ->
+                ps.setString(1, phone); ps.setString(2, phone); ps.setString(3, publicKey); ps.setLong(4, System.currentTimeMillis())
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    fun getPublicKey(phone: String): String {
+        var key = ""
+        withConn { conn ->
+            conn.prepareStatement("SELECT public_key FROM users WHERE phone = ? LIMIT 1").use { ps ->
+                ps.setString(1, phone)
+                ps.executeQuery().use { rs -> if (rs.next()) key = rs.getString("public_key") ?: "" }
+            }
+        }
+        return key
     }
 
     fun getFcmToken(phone: String): String {
@@ -372,6 +405,18 @@ fun Application.module() {
             call.respondText(json.encodeToString(OtpApiResult(true, "Token saved")), ContentType.Application.Json)
         }
 
+        post("/keys/upload") {
+            val body = json.decodeFromString<PublicKeyBody>(call.receiveText())
+            Db.savePublicKey(body.phone.trim(), body.publicKey.trim())
+            call.respondText(json.encodeToString(OtpApiResult(true, "Key saved")), ContentType.Application.Json)
+        }
+
+        get("/keys/{phone}") {
+            val phone = call.parameters["phone"]?.trim().orEmpty()
+            val key = Db.getPublicKey(phone)
+            call.respondText(json.encodeToString(PublicKeyResponse(phone, key)), ContentType.Application.Json)
+        }
+
         post("/contacts/sync") {
             val body = json.decodeFromString<ContactSyncRequest>(call.receiveText())
             val found = Db.findRegisteredUsers(body.phones.distinct().take(500))
@@ -422,7 +467,8 @@ private suspend fun handlePayload(msg: ChatPayload) {
                     Db.queueOfflineMessage(targetId, msg)
                     val fcmToken = Db.getFcmToken(targetId)
                     val title = if (msg.isGroup && !msg.groupName.isNullOrBlank()) "${msg.groupName} • $senderName" else senderName
-                    FcmSender.sendPush(fcmToken, title, msg.content, if (msg.isGroup) msg.chatId else msg.senderId)
+                    val pushBody = if (msg.isEncrypted) "🔒 New encrypted message" else msg.content
+                    FcmSender.sendPush(fcmToken, title, pushBody, if (msg.isGroup) msg.chatId else msg.senderId)
                 }
             }
             if (delivered) {
@@ -440,9 +486,8 @@ private suspend fun handlePayload(msg: ChatPayload) {
             val callerName by lazy { Db.getDisplayName(msg.senderId) }
             msg.receiverIds.filter { it != msg.senderId }.forEach { targetId ->
                 val target = activeConnections[targetId]
-                if (target != null) {
-                    sendPayload(target, msg)
-                } else {
+                if (target != null) sendPayload(target, msg)
+                else {
                     val callKind = if (msg.callVideo) "Video" else "Voice"
                     FcmSender.sendPush(Db.getFcmToken(targetId), "Incoming $callKind Call", "$callerName is calling you on GlobalChat", msg.senderId)
                 }
