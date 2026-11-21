@@ -18,6 +18,7 @@ import java.util.concurrent.TimeUnit
 class ChatSocketClient {
     private val json = Json { ignoreUnknownKeys = true }
     private val publicKeyCache = ConcurrentHashMap<String, String>()
+    private val profileCache = ConcurrentHashMap<String, RegisteredUserDto>()
 
     private val client = HttpClient(OkHttp) {
         install(WebSockets)
@@ -83,13 +84,25 @@ class ChatSocketClient {
         }
     }
 
-    suspend fun syncProfile(serverHost: String, phone: String, displayName: String, about: String) {
+    suspend fun syncProfile(serverHost: String, phone: String, displayName: String, about: String, avatarBase64: String?) {
         try {
             client.post("${httpBase(serverHost)}/profile/sync") {
                 contentType(ContentType.Application.Json)
-                setBody(json.encodeToString(ProfileSyncBody(phone, displayName, about)))
+                setBody(json.encodeToString(ProfileSyncBody(phone, displayName, about, avatarBase64)))
             }
         } catch (_: Exception) { }
+    }
+
+    suspend fun fetchProfile(serverHost: String, phone: String): RegisteredUserDto? {
+        profileCache[phone]?.let { return it }
+        return try {
+            val resp = client.get("${httpBase(serverHost)}/profile/${phone.encodeURLParameter()}")
+            val dto = json.decodeFromString<RegisteredUserDto>(resp.bodyAsText())
+            profileCache[phone] = dto
+            dto
+        } catch (_: Exception) {
+            null
+        }
     }
 
     suspend fun registerFcmToken(serverHost: String, phone: String, token: String) {
@@ -131,7 +144,27 @@ class ChatSocketClient {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString(ContactSyncRequest(phones)))
             }
-            json.decodeFromString<ContactSyncResponse>(resp.bodyAsText()).users
+            val users = json.decodeFromString<ContactSyncResponse>(resp.bodyAsText()).users
+            users.forEach { profileCache[it.phone] = it }
+            users
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
+
+    suspend fun postStatus(serverHost: String, status: StatusDto) {
+        try {
+            client.post("${httpBase(serverHost)}/statuses") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(status))
+            }
+        } catch (_: Exception) { }
+    }
+
+    suspend fun fetchStatuses(serverHost: String): List<StatusDto> {
+        return try {
+            val resp = client.get("${httpBase(serverHost)}/statuses")
+            json.decodeFromString<StatusListResponse>(resp.bodyAsText()).statuses
         } catch (_: Exception) {
             emptyList()
         }
