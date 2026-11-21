@@ -36,6 +36,18 @@ data class OtpVerifyBody(val phone: String, val code: String)
 @Serializable
 data class OtpApiResult(val ok: Boolean, val message: String)
 
+@Serializable
+data class ProfileSyncBody(val phone: String, val displayName: String, val about: String)
+
+@Serializable
+data class ContactSyncRequest(val phones: List<String>)
+
+@Serializable
+data class RegisteredUserDto(val phone: String, val displayName: String, val about: String)
+
+@Serializable
+data class ContactSyncResponse(val users: List<RegisteredUserDto> = emptyList())
+
 enum class OnboardingStep { WELCOME, PHONE, OTP, PROFILE, DONE }
 
 data class CountryOption(val name: String, val dialCode: String, val flag: String)
@@ -52,7 +64,9 @@ val supportedCountries = listOf(
 
 data class PhoneContact(
     val name: String,
-    val phoneNumber: String
+    val phoneNumber: String,
+    val isOnGlobalChat: Boolean = false,
+    val about: String = ""
 )
 
 data class UserProfile(
