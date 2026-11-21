@@ -15,7 +15,8 @@ data class ChatEntity(
     val memberIdsCsv: String,
     val lastMessage: String,
     val lastTimestamp: Long,
-    val unreadCount: Int = 0
+    val unreadCount: Int = 0,
+    val avatarBase64: String? = null
 )
 
 @Entity(tableName = "messages")
@@ -40,9 +41,10 @@ data class StatusEntity(
     @PrimaryKey val id: String,
     val ownerName: String,
     val ownerId: String,
+    val ownerAvatarBase64: String? = null,
     val caption: String,
     val imageBase64: String? = null,
-    val bgColorHex: Long = 0xFF075E54,
+    val bgColorHex: Long = 0xFF005C4B,
     val timestamp: Long,
     val viewed: Boolean = false
 )
@@ -98,6 +100,9 @@ interface ChatDao {
     @Query("SELECT * FROM statuses ORDER BY timestamp DESC")
     fun observeStatuses(): Flow<List<StatusEntity>>
 
+    @Query("SELECT * FROM statuses WHERE id = :id LIMIT 1")
+    suspend fun getStatus(id: String): StatusEntity?
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertStatus(status: StatusEntity)
 
@@ -119,7 +124,7 @@ interface ChatDao {
 
 @Database(
     entities = [ChatEntity::class, MessageEntity::class, StatusEntity::class, CallLogEntity::class],
-    version = 2,
+    version = 3,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
