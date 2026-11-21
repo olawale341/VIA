@@ -27,7 +27,8 @@ data class ChatPayload(
     val groupName: String? = null,
     val callVideo: Boolean = false,
     val sdpMid: String? = null,
-    val sdpMLineIndex: Int = 0
+    val sdpMLineIndex: Int = 0,
+    val isEncrypted: Boolean = false
 )
 
 @Serializable
@@ -44,6 +45,12 @@ data class ProfileSyncBody(val phone: String, val displayName: String, val about
 
 @Serializable
 data class FcmTokenBody(val phone: String, val token: String)
+
+@Serializable
+data class PublicKeyBody(val phone: String, val publicKey: String)
+
+@Serializable
+data class PublicKeyResponse(val phone: String, val publicKey: String = "")
 
 @Serializable
 data class ContactSyncRequest(val phones: List<String>)
