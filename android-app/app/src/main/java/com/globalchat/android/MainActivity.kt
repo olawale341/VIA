@@ -49,8 +49,33 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
     val callLogs by vm.callLogs.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
+    var pendingCallAction by remember { mutableStateOf<(() -> Unit)?>(null) }
 
     val notifPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
+    val callPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+        if (results.values.all { it }) {
+            pendingCallAction?.invoke()
+        }
+        pendingCallAction = null
+    }
+
+    fun runWithCallPermissions(isVideo: Boolean, action: () -> Unit) {
+        val needed = if (isVideo) {
+            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        } else {
+            arrayOf(Manifest.permission.RECORD_AUDIO)
+        }
+        val allGranted = needed.all {
+            ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+        }
+        if (allGranted) {
+            action()
+        } else {
+            pendingCallAction = action
+            callPermLauncher.launch(needed)
+        }
+    }
 
     when (step) {
         OnboardingStep.WELCOME -> WelcomeScreen(onAgree = vm::acceptTerms)
@@ -80,7 +105,16 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
             val call = activeCall
             if (call != null) {
                 BackHandler { vm.endCall() }
-                ActiveCallScreen(call = call, onEndCall = vm::endCall)
+                ActiveCallScreen(
+                    call = call,
+                    eglContext = vm.rtcManager.eglBase.eglBaseContext,
+                    onAttachRenderers = vm::attachCallRenderers,
+                    onDetachRenderers = vm::detachCallRenderers,
+                    onAccept = { runWithCallPermissions(call.isVideo) { vm.acceptIncomingCall() } },
+                    onToggleMute = vm::toggleCallMute,
+                    onToggleSpeaker = vm::toggleCallSpeaker,
+                    onEndCall = { vm.endCall() }
+                )
             } else if (showSettings) {
                 BackHandler { showSettings = false }
                 SettingsScreen(
@@ -106,7 +140,11 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
                         onTypingChanged = vm::sendTyping,
                         onReact = vm::sendReaction,
                         onDelete = vm::deleteMessageForEveryone,
-                        onStartCall = { isVideo -> vm.startCall(currentChat.chatId, currentChat.title, isVideo) }
+                        onStartCall = { isVideo ->
+                            runWithCallPermissions(isVideo) {
+                                vm.startCall(currentChat.chatId, currentChat.title, isVideo)
+                            }
+                        }
                     )
                 }
             } else {
@@ -124,7 +162,11 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
                     onCreateGroup = vm::createGroup,
                     onPostStatus = vm::postStatus,
                     onStatusViewed = vm::markStatusViewed,
-                    onStartCall = vm::startCall,
+                    onStartCall = { partnerId, title, isVideo ->
+                        runWithCallPermissions(isVideo) {
+                            vm.startCall(partnerId, title, isVideo)
+                        }
+                    },
                     onOpenSettings = { showSettings = true },
                     onLogOut = vm::logOut
                 )
