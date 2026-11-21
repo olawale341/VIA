@@ -41,7 +41,7 @@ data class OtpVerifyBody(val phone: String, val code: String)
 data class OtpApiResult(val ok: Boolean, val message: String)
 
 @Serializable
-data class ProfileSyncBody(val phone: String, val displayName: String, val about: String)
+data class ProfileSyncBody(val phone: String, val displayName: String, val about: String, val avatarBase64: String? = null)
 
 @Serializable
 data class FcmTokenBody(val phone: String, val token: String)
@@ -56,10 +56,25 @@ data class PublicKeyResponse(val phone: String, val publicKey: String = "")
 data class ContactSyncRequest(val phones: List<String>)
 
 @Serializable
-data class RegisteredUserDto(val phone: String, val displayName: String, val about: String)
+data class RegisteredUserDto(val phone: String, val displayName: String, val about: String, val avatarBase64: String? = null)
 
 @Serializable
 data class ContactSyncResponse(val users: List<RegisteredUserDto> = emptyList())
+
+@Serializable
+data class StatusDto(
+    val id: String,
+    val ownerPhone: String,
+    val ownerName: String,
+    val ownerAvatar: String? = null,
+    val caption: String,
+    val imageBase64: String? = null,
+    val bgColorHex: Long = 0xFF005C4B,
+    val timestamp: Long
+)
+
+@Serializable
+data class StatusListResponse(val statuses: List<StatusDto> = emptyList())
 
 enum class OnboardingStep { WELCOME, PHONE, OTP, PROFILE, DONE }
 
@@ -81,7 +96,8 @@ data class PhoneContact(
     val name: String,
     val phoneNumber: String,
     val isOnGlobalChat: Boolean = false,
-    val about: String = ""
+    val about: String = "",
+    val avatarBase64: String? = null
 )
 
 data class UserProfile(
@@ -100,5 +116,6 @@ data class ActiveCallUiState(
     val isVideo: Boolean,
     val status: CallStatus = CallStatus.OUTGOING_RINGING,
     val isMuted: Boolean = false,
-    val isSpeaker: Boolean = false
+    val isSpeaker: Boolean = false,
+    val partnerAvatarBase64: String? = null
 )
