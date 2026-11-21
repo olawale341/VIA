@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "1024570693649",
+    "project_id": "globalchat-da7cc",
+    "storage_bucket": "globalchat-da7cc.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:1024570693649:android:7cf9cde0754771b418f9b0",
+        "android_client_info": {
+          "package_name": "com.globalchat.android"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAiYLxZV2MVmFbIf5fKzfay7AfJI4np1X0"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
