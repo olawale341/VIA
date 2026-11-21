@@ -40,6 +40,9 @@ data class OtpApiResult(val ok: Boolean, val message: String)
 data class ProfileSyncBody(val phone: String, val displayName: String, val about: String)
 
 @Serializable
+data class FcmTokenBody(val phone: String, val token: String)
+
+@Serializable
 data class ContactSyncRequest(val phones: List<String>)
 
 @Serializable
