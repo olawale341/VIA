@@ -10,6 +10,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
@@ -19,52 +20,58 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.globalchat.android.model.supportedCountries
 import kotlinx.coroutines.delay
 
-private val WaGreen = Color(0xFF008069)
-private val WaBrightGreen = Color(0xFF1DAB61)
-
 @Composable
 fun WelcomeScreen(onAgree: () -> Unit) {
+    val p = LocalWaPalette.current
     Column(
-        modifier = Modifier.fillMaxSize().background(Color.White).padding(28.dp),
+        modifier = Modifier.fillMaxSize().background(p.bg).padding(horizontal = 24.dp, vertical = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.SpaceBetween
     ) {
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(36.dp))
+
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Box(
-                modifier = Modifier.size(120.dp).clip(CircleShape).background(Color(0xFFE7FFDB)),
+                modifier = Modifier.size(92.dp).clip(CircleShape).background(if (p.isDark) Color.Transparent else Color(0xFFE7FFDB)),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(Icons.Default.Forum, null, tint = WaGreen, modifier = Modifier.size(64.dp))
+                Icon(Icons.Default.Call, null, tint = p.accent, modifier = Modifier.size(64.dp))
             }
-            Spacer(Modifier.height(32.dp))
-            Text("Welcome to GlobalChat", fontSize = 24.sp, fontWeight = FontWeight.Bold, color = Color(0xFF111B21))
+            Spacer(Modifier.height(44.dp))
+            Text("Welcome to GlobalChat", fontSize = 26.sp, fontWeight = FontWeight.Medium, color = p.textPrimary)
             Spacer(Modifier.height(14.dp))
-            Text(
-                "Simple, reliable, private messaging across the world. Tap \"Agree and continue\" to accept our Terms of Service and Privacy Policy.",
-                textAlign = TextAlign.Center,
-                color = Color(0xFF667781),
-                fontSize = 14.sp,
-                lineHeight = 20.sp
-            )
+            val policyText = buildAnnotatedString {
+                append("Read our ")
+                withStyle(SpanStyle(color = p.linkBlue)) { append("Privacy Policies") }
+                append(". Tap \"Agree and continue\" to accept our ")
+                withStyle(SpanStyle(color = p.linkBlue)) { append("Terms of Service") }
+                append(".")
+            }
+            Text(policyText, textAlign = TextAlign.Center, color = p.textSecondary, fontSize = 13.5.sp, lineHeight = 20.sp)
         }
+
         Button(
             onClick = onAgree,
             shape = RoundedCornerShape(24.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = WaGreen),
-            modifier = Modifier.fillMaxWidth().height(48.dp)
+            colors = ButtonDefaults.buttonColors(containerColor = p.accent),
+            modifier = Modifier.fillMaxWidth().height(46.dp)
         ) {
-            Text("Agree and continue", color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text("Agree and continue", color = p.accentText, fontWeight = FontWeight.SemiBold, fontSize = 14.5.sp)
         }
     }
 }
@@ -75,36 +82,39 @@ fun PhoneEntryScreen(
     errorText: String?,
     onSubmit: (String, String, String) -> Unit
 ) {
+    val p = LocalWaPalette.current
     var selectedCountry by remember { mutableStateOf(supportedCountries.first()) }
     var showCountryMenu by remember { mutableStateOf(false) }
     var localPhone by remember { mutableStateOf("") }
     var email by remember { mutableStateOf("") }
 
     Column(
-        modifier = Modifier.fillMaxSize().background(Color.White).padding(24.dp),
+        modifier = Modifier.fillMaxSize().background(p.bg).padding(horizontal = 24.dp, vertical = 24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
-        Spacer(Modifier.height(24.dp))
-        Text("Enter your phone & email", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WaGreen)
-        Spacer(Modifier.height(10.dp))
-        Text(
-            "GlobalChat will email a free 6-digit verification code to verify your account.",
-            textAlign = TextAlign.Center,
-            fontSize = 13.sp,
-            color = Color(0xFF667781)
-        )
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(18.dp))
+        Text("Enter your phone number", fontSize = 21.sp, fontWeight = FontWeight.Medium, color = p.textPrimary)
+        Spacer(Modifier.height(12.dp))
+        val sub = buildAnnotatedString {
+            append("GlobalChat will verify your account and email a free 6-digit verification code. ")
+            withStyle(SpanStyle(color = p.accent)) { append("Secure OTP") }
+        }
+        Text(sub, textAlign = TextAlign.Center, fontSize = 13.5.sp, color = p.textSecondary, lineHeight = 19.sp)
+        Spacer(Modifier.height(28.dp))
 
-        Box(modifier = Modifier.fillMaxWidth()) {
-            OutlinedTextField(
-                value = "${selectedCountry.flag}  ${selectedCountry.name}",
-                onValueChange = {},
-                readOnly = true,
-                label = { Text("Country") },
-                trailingIcon = { Icon(Icons.Default.ArrowDropDown, null) },
-                modifier = Modifier.fillMaxWidth()
-            )
-            Box(modifier = Modifier.matchParentSize().clickable { showCountryMenu = true })
+        Box(modifier = Modifier.width(260.dp).clickable { showCountryMenu = true }) {
+            Column {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Spacer(Modifier.width(20.dp))
+                    Text("${selectedCountry.flag}  ${selectedCountry.name}", color = p.textPrimary, fontSize = 16.sp)
+                    Icon(Icons.Default.ArrowDropDown, null, tint = p.accent)
+                }
+                HorizontalDivider(color = p.accent, thickness = 1.2.dp)
+            }
             DropdownMenu(expanded = showCountryMenu, onDismissRequest = { showCountryMenu = false }) {
                 supportedCountries.forEach { country ->
                     DropdownMenuItem(
@@ -115,54 +125,76 @@ fun PhoneEntryScreen(
             }
         }
 
-        Spacer(Modifier.height(12.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            OutlinedTextField(
-                value = selectedCountry.dialCode,
-                onValueChange = {},
-                readOnly = true,
-                label = { Text("Code") },
-                modifier = Modifier.width(96.dp)
-            )
-            OutlinedTextField(
-                value = localPhone,
-                onValueChange = { localPhone = it },
-                label = { Text("Phone number") },
-                placeholder = { Text("8012345678") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                modifier = Modifier.weight(1f)
-            )
+        Spacer(Modifier.height(16.dp))
+
+        Row(modifier = Modifier.width(260.dp), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Bottom) {
+            Column(modifier = Modifier.width(72.dp)) {
+                Row(modifier = Modifier.padding(vertical = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("+ ", color = p.textSecondary, fontSize = 16.sp)
+                    Text(selectedCountry.dialCode.removePrefix("+"), color = p.textPrimary, fontSize = 16.sp)
+                }
+                HorizontalDivider(color = p.accent, thickness = 1.2.dp)
+            }
+            Column(modifier = Modifier.weight(1f)) {
+                BasicTextField(
+                    value = localPhone,
+                    onValueChange = { localPhone = it },
+                    singleLine = true,
+                    cursorBrush = SolidColor(p.accent),
+                    textStyle = TextStyle(color = p.textPrimary, fontSize = 16.sp),
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
+                    decorationBox = { inner ->
+                        Box(modifier = Modifier.padding(vertical = 8.dp)) {
+                            if (localPhone.isEmpty()) Text("Phone number", color = p.textSecondary, fontSize = 16.sp)
+                            inner()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                )
+                HorizontalDivider(color = p.accent, thickness = 1.6.dp)
+            }
         }
 
-        Spacer(Modifier.height(12.dp))
-        OutlinedTextField(
-            value = email,
-            onValueChange = { email = it },
-            label = { Text("Email for 6-digit OTP") },
-            placeholder = { Text("you@gmail.com") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-            modifier = Modifier.fillMaxWidth()
-        )
+        Spacer(Modifier.height(18.dp))
+
+        Column(modifier = Modifier.width(260.dp)) {
+            BasicTextField(
+                value = email,
+                onValueChange = { email = it },
+                singleLine = true,
+                cursorBrush = SolidColor(p.accent),
+                textStyle = TextStyle(color = p.textPrimary, fontSize = 15.sp),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+                decorationBox = { inner ->
+                    Box(modifier = Modifier.padding(vertical = 8.dp)) {
+                        if (email.isEmpty()) Text("Email address (for 6-digit OTP)", color = p.textSecondary, fontSize = 14.5.sp)
+                        inner()
+                    }
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            HorizontalDivider(color = p.surfaceVariant, thickness = 1.2.dp)
+        }
 
         if (errorText != null) {
-            Spacer(Modifier.height(10.dp))
-            Text(errorText, color = Color.Red, fontSize = 12.sp, textAlign = TextAlign.Center)
+            Spacer(Modifier.height(14.dp))
+            Text(errorText, color = p.danger, fontSize = 12.5.sp, textAlign = TextAlign.Center)
         }
 
         Spacer(Modifier.weight(1f))
+
+        val canProceed = !isLoading && localPhone.count { it.isDigit() } >= 6 && email.contains("@")
         Button(
             onClick = { onSubmit(selectedCountry.dialCode, localPhone, email) },
-            enabled = !isLoading && localPhone.count { it.isDigit() } >= 6 && email.contains("@"),
+            enabled = canProceed,
             shape = RoundedCornerShape(24.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = WaGreen),
-            modifier = Modifier.width(160.dp).height(46.dp)
+            colors = ButtonDefaults.buttonColors(containerColor = p.accent, disabledContainerColor = p.surface),
+            modifier = Modifier.fillMaxWidth().height(46.dp)
         ) {
-            if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            else Text("Send Code", color = Color.White, fontWeight = FontWeight.SemiBold)
+            if (isLoading) CircularProgressIndicator(color = p.accentText, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Next", color = if (canProceed) p.accentText else p.textSecondary, fontWeight = FontWeight.SemiBold, fontSize = 15.sp)
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
     }
 }
 
@@ -176,6 +208,7 @@ fun OtpVerificationScreen(
     onResend: () -> Unit,
     onWrongNumber: () -> Unit
 ) {
+    val p = LocalWaPalette.current
     var otpCode by remember { mutableStateOf("") }
     var secondsLeft by remember { mutableIntStateOf(60) }
 
@@ -187,34 +220,44 @@ fun OtpVerificationScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().background(Color.White).padding(24.dp),
+        modifier = Modifier.fillMaxSize().background(p.bg).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Spacer(Modifier.height(24.dp))
-        Text("Verifying $phoneNumber", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WaGreen)
-        Spacer(Modifier.height(8.dp))
-        Text("We emailed a 6-digit code to $email", fontSize = 13.sp, color = Color(0xFF667781), textAlign = TextAlign.Center)
-        TextButton(onClick = onWrongNumber) { Text("Wrong phone or email?", color = Color(0xFF027EB5)) }
+        Text("Verifying $phoneNumber", fontSize = 20.sp, fontWeight = FontWeight.Medium, color = p.textPrimary)
+        Spacer(Modifier.height(10.dp))
+        Text("We sent a 6-digit code to $email.", fontSize = 13.5.sp, color = p.textSecondary, textAlign = TextAlign.Center)
+        TextButton(onClick = onWrongNumber) { Text("Wrong number or email?", color = p.linkBlue) }
 
-        Spacer(Modifier.height(20.dp))
-        OutlinedTextField(
-            value = otpCode,
-            onValueChange = { if (it.length <= 6 && it.all(Char::isDigit)) otpCode = it },
-            label = { Text("Enter 6-digit code") },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            modifier = Modifier.width(220.dp)
-        )
-        if (errorText != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(errorText, color = Color.Red, fontSize = 12.sp, textAlign = TextAlign.Center)
+        Spacer(Modifier.height(24.dp))
+        Column(modifier = Modifier.width(200.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            BasicTextField(
+                value = otpCode,
+                onValueChange = { if (it.length <= 6 && it.all(Char::isDigit)) otpCode = it },
+                singleLine = true,
+                cursorBrush = SolidColor(p.accent),
+                textStyle = TextStyle(color = p.textPrimary, fontSize = 24.sp, letterSpacing = 8.sp, textAlign = TextAlign.Center),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                decorationBox = { inner ->
+                    Box(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp), contentAlignment = Alignment.Center) {
+                        if (otpCode.isEmpty()) Text("- - -  - - -", color = p.textSecondary, fontSize = 22.sp)
+                        inner()
+                    }
+                }
+            )
+            HorizontalDivider(color = p.accent, thickness = 1.6.dp)
         }
-        Spacer(Modifier.height(16.dp))
+
+        if (errorText != null) {
+            Spacer(Modifier.height(12.dp))
+            Text(errorText, color = p.danger, fontSize = 12.5.sp, textAlign = TextAlign.Center)
+        }
+        Spacer(Modifier.height(18.dp))
         Text(
-            text = if (secondsLeft > 0) "Resend code in 0:${secondsLeft.toString().padStart(2, '0')}" else "Didn't receive code? Tap to Resend",
-            fontSize = 13.sp,
-            color = if (secondsLeft > 0) Color(0xFF667781) else WaGreen,
-            fontWeight = if (secondsLeft == 0) FontWeight.Bold else FontWeight.Normal,
+            text = if (secondsLeft > 0) "Resend code in 0:${secondsLeft.toString().padStart(2, '0')}" else "Didn't receive code? Resend",
+            fontSize = 13.5.sp,
+            color = if (secondsLeft > 0) p.textSecondary else p.accent,
+            fontWeight = if (secondsLeft == 0) FontWeight.SemiBold else FontWeight.Normal,
             modifier = Modifier.clickable(enabled = secondsLeft == 0 && !isLoading) {
                 secondsLeft = 60
                 onResend()
@@ -226,18 +269,19 @@ fun OtpVerificationScreen(
             onClick = { onVerify(otpCode) },
             enabled = !isLoading && otpCode.length == 6,
             shape = RoundedCornerShape(24.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = WaGreen),
-            modifier = Modifier.width(160.dp).height(46.dp)
+            colors = ButtonDefaults.buttonColors(containerColor = p.accent, disabledContainerColor = p.surface),
+            modifier = Modifier.fillMaxWidth().height(46.dp)
         ) {
-            if (isLoading) CircularProgressIndicator(color = Color.White, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            else Text("Verify", color = Color.White, fontWeight = FontWeight.SemiBold)
+            if (isLoading) CircularProgressIndicator(color = p.accentText, modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            else Text("Verify", color = if (otpCode.length == 6) p.accentText else p.textSecondary, fontWeight = FontWeight.SemiBold)
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
     }
 }
 
 @Composable
 fun ProfileSetupScreen(onComplete: (String, String, Uri?) -> Unit) {
+    val p = LocalWaPalette.current
     val context = LocalContext.current
     var name by remember { mutableStateOf("") }
     var about by remember { mutableStateOf("Hey there! I am using GlobalChat.") }
@@ -248,44 +292,48 @@ fun ProfileSetupScreen(onComplete: (String, String, Uri?) -> Unit) {
     }
 
     val previewBitmap = remember(avatarUri) {
-        avatarUri?.let {
-            MediaHelper.uriToCompressedBase64(context, it, 300)?.let(MediaHelper::decodeBase64ToImage)
-        }
+        avatarUri?.let { MediaHelper.uriToCompressedBase64(context, it, 300)?.let(MediaHelper::decodeBase64ToImage) }
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().background(Color.White).padding(24.dp),
+        modifier = Modifier.fillMaxSize().background(p.bg).padding(24.dp),
         horizontalAlignment = Alignment.CenterHorizontally
     ) {
         Spacer(Modifier.height(24.dp))
-        Text("Profile info", fontSize = 20.sp, fontWeight = FontWeight.Bold, color = WaGreen)
+        Text("Profile info", fontSize = 20.sp, fontWeight = FontWeight.Medium, color = p.textPrimary)
         Spacer(Modifier.height(8.dp))
-        Text("Please provide your name and an optional profile photo", fontSize = 13.sp, color = Color(0xFF667781))
+        Text("Please provide your name and an optional profile photo", fontSize = 13.sp, color = p.textSecondary, textAlign = TextAlign.Center)
         Spacer(Modifier.height(28.dp))
 
         Box(
             modifier = Modifier
-                .size(110.dp)
+                .size(116.dp)
                 .clip(CircleShape)
-                .background(Color(0xFFE9EDEF))
-                .clickable {
-                    photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
-                },
+                .background(p.surface)
+                .clickable { photoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             contentAlignment = Alignment.Center
         ) {
             if (previewBitmap != null) {
                 Image(previewBitmap, contentDescription = "Avatar", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
             } else {
-                Icon(Icons.Default.AddAPhoto, null, tint = Color(0xFF667781), modifier = Modifier.size(38.dp))
+                Icon(Icons.Default.AddAPhoto, null, tint = p.textSecondary, modifier = Modifier.size(40.dp))
             }
         }
 
-        Spacer(Modifier.height(24.dp))
+        Spacer(Modifier.height(28.dp))
         OutlinedTextField(
             value = name,
             onValueChange = { name = it },
             label = { Text("Type your name here") },
             singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = p.textPrimary,
+                unfocusedTextColor = p.textPrimary,
+                focusedBorderColor = p.accent,
+                unfocusedBorderColor = p.surfaceVariant,
+                focusedLabelColor = p.accent,
+                unfocusedLabelColor = p.textSecondary
+            ),
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(12.dp))
@@ -294,6 +342,14 @@ fun ProfileSetupScreen(onComplete: (String, String, Uri?) -> Unit) {
             onValueChange = { about = it },
             label = { Text("About") },
             singleLine = true,
+            colors = OutlinedTextFieldDefaults.colors(
+                focusedTextColor = p.textPrimary,
+                unfocusedTextColor = p.textPrimary,
+                focusedBorderColor = p.accent,
+                unfocusedBorderColor = p.surfaceVariant,
+                focusedLabelColor = p.accent,
+                unfocusedLabelColor = p.textSecondary
+            ),
             modifier = Modifier.fillMaxWidth()
         )
 
@@ -302,11 +358,11 @@ fun ProfileSetupScreen(onComplete: (String, String, Uri?) -> Unit) {
             onClick = { onComplete(name, about, avatarUri) },
             enabled = name.isNotBlank(),
             shape = RoundedCornerShape(24.dp),
-            colors = ButtonDefaults.buttonColors(containerColor = WaBrightGreen),
-            modifier = Modifier.width(150.dp).height(46.dp)
+            colors = ButtonDefaults.buttonColors(containerColor = p.accent, disabledContainerColor = p.surface),
+            modifier = Modifier.fillMaxWidth().height(46.dp)
         ) {
-            Text("Next", color = Color.White, fontWeight = FontWeight.SemiBold)
+            Text("Next", color = if (name.isNotBlank()) p.accentText else p.textSecondary, fontWeight = FontWeight.SemiBold)
         }
-        Spacer(Modifier.height(16.dp))
+        Spacer(Modifier.height(8.dp))
     }
 }
