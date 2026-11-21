@@ -107,7 +107,8 @@ data class UserProfile(
     val avatarBase64: String? = null,
     val serverHost: String = DEFAULT_SERVER_HOST,
     val readReceipts: Boolean = true,
-    val isRegistered: Boolean = false
+    val isRegistered: Boolean = false,
+    val themeMode: String = "SYSTEM"
 )
 
 data class ActiveCallUiState(
