@@ -15,6 +15,9 @@ data class ChatPayload(
     val timestamp: Long,
     val status: MessageStatus = MessageStatus.SENT,
     val type: String = "TEXT",
+    val mediaType: String = "TEXT", // "TEXT" | "IMAGE" | "VOICE"
+    val mediaBase64: String? = null,
+    val durationSec: Int = 0,
     val replyToId: String? = null,
     val replyToText: String? = null,
     val reaction: String? = null,
@@ -22,17 +25,37 @@ data class ChatPayload(
     val groupName: String? = null
 )
 
-data class StatusUpdateItem(
-    val userName: String,
-    val timeLabel: String,
-    val caption: String,
-    val viewed: Boolean = false
+enum class OnboardingStep { WELCOME, PHONE, OTP, PROFILE, DONE }
+
+data class CountryOption(val name: String, val dialCode: String, val flag: String)
+
+val supportedCountries = listOf(
+    CountryOption("Nigeria", "+234", "🇳🇬"),
+    CountryOption("Ghana", "+233", "🇬🇭"),
+    CountryOption("Kenya", "+254", "🇰🇪"),
+    CountryOption("South Africa", "+27", "🇿🇦"),
+    CountryOption("United Kingdom", "+44", "🇬🇧"),
+    CountryOption("United States", "+1", "🇺🇸"),
+    CountryOption("India", "+91", "🇮🇳")
 )
 
-data class CallLogItem(
+data class PhoneContact(
     val name: String,
-    val timeLabel: String,
-    val isVideo: Boolean,
-    val isMissed: Boolean,
-    val isIncoming: Boolean
+    val phoneNumber: String
+)
+
+data class UserProfile(
+    val phoneNumber: String = "",
+    val displayName: String = "",
+    val about: String = "Hey there! I am using GlobalChat.",
+    val avatarBase64: String? = null,
+    val serverHost: String = "10.0.2.2:8080",
+    val readReceipts: Boolean = true,
+    val isRegistered: Boolean = false
+)
+
+data class ActiveCallUiState(
+    val partnerId: String,
+    val title: String,
+    val isVideo: Boolean
 )
