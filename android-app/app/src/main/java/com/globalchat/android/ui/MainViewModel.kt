@@ -146,7 +146,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun completeProfile(name: String, about: String, avatarUri: Uri?) {
         viewModelScope.launch(Dispatchers.IO) {
-            val avatarB64 = avatarUri?.let { MediaHelper.uriToCompressedBase64(appContext, avatarUri, 360) }
+            val avatarB64 = avatarUri?.let { MediaHelper.uriToCompressedBase64(appContext, it, 360) }
             val updated = _profile.value.copy(
                 phoneNumber = _pendingPhone.value,
                 displayName = name.trim().ifBlank { _pendingPhone.value },
@@ -164,7 +164,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun updateProfileAndServer(name: String, about: String, serverHost: String, readReceipts: Boolean, avatarUri: Uri?) {
         viewModelScope.launch(Dispatchers.IO) {
             val current = _profile.value
-            val avatarB64 = if (avatarUri != null) MediaHelper.uriToCompressedBase64(appContext, it, 360) else current.avatarBase64
+            val avatarB64 = if (avatarUri != null) MediaHelper.uriToCompressedBase64(appContext, avatarUri, 360) else current.avatarBase64
             val updated = current.copy(
                 displayName = name.trim().ifBlank { current.displayName },
                 about = about.trim().ifBlank { current.about },
