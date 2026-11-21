@@ -82,10 +82,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Onboarding ---
-    fun acceptTerms() {
-        _onboardingStep.value = OnboardingStep.PHONE
-    }
+    fun acceptTerms() { _onboardingStep.value = OnboardingStep.PHONE }
 
     fun submitPhone(dialCode: String, localNumber: String, email: String) {
         val digits = localNumber.filter { it.isDigit() }.dropWhile { it == '0' }
@@ -103,11 +100,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val res = socket.requestOtp(_profile.value.serverHost, fullPhone, cleanEmail)
             _isAuthLoading.value = false
-            if (res.ok) {
-                _onboardingStep.value = OnboardingStep.OTP
-            } else {
-                _otpError.value = res.message
-            }
+            if (res.ok) _onboardingStep.value = OnboardingStep.OTP
+            else _otpError.value = res.message
         }
     }
 
@@ -136,11 +130,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val res = socket.verifyOtp(_profile.value.serverHost, phone, code.trim())
             _isAuthLoading.value = false
-            if (res.ok) {
-                _onboardingStep.value = OnboardingStep.PROFILE
-            } else {
-                _otpError.value = res.message
-            }
+            if (res.ok) _onboardingStep.value = OnboardingStep.PROFILE
+            else _otpError.value = res.message
         }
     }
 
@@ -157,6 +148,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             prefs.save(updated)
             _profile.value = updated
             _onboardingStep.value = OnboardingStep.DONE
+            socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about)
             socket.start(viewModelScope, updated.phoneNumber, updated.serverHost)
         }
     }
@@ -174,6 +166,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             prefs.save(updated)
             _profile.value = updated
+            socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about)
             socket.start(viewModelScope, updated.phoneNumber, updated.serverHost)
         }
     }
@@ -190,14 +183,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    // --- Contacts ---
     fun loadDeviceContacts() {
         viewModelScope.launch(Dispatchers.IO) {
-            _phoneContacts.value = MediaHelper.readPhoneContacts(appContext)
+            val raw = MediaHelper.readPhoneContacts(appContext)
+            val myPhone = _profile.value.phoneNumber
+            val myPrefix = supportedCountries.firstOrNull { myPhone.startsWith(it.dialCode) }?.dialCode ?: "+234"
+            val normalized = raw.map { c ->
+                val num = if (c.phoneNumber.startsWith("0") && c.phoneNumber.length >= 10) {
+                    myPrefix + c.phoneNumber.drop(1)
+                } else c.phoneNumber
+                c.copy(phoneNumber = num)
+            }
+            _phoneContacts.value = normalized
+            val registered = socket.syncContacts(_profile.value.serverHost, normalized.map { it.phoneNumber })
+                .associateBy { it.phone }
+            _phoneContacts.value = normalized.map { c ->
+                val reg = registered[c.phoneNumber]
+                if (reg != null) c.copy(isOnGlobalChat = true, about = reg.about) else c
+            }.sortedByDescending { it.isOnGlobalChat }
         }
     }
 
-    // --- Chats & Messaging ---
     fun startChat(partnerPhone: String, partnerName: String? = null) {
         val clean = partnerPhone.replace(Regex("[\\s()-]"), "")
         val me = _profile.value.phoneNumber
@@ -221,11 +227,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun createGroup(groupName: String, memberPhonesCsv: String) {
         val me = _profile.value.phoneNumber
-        val members = memberPhonesCsv.split(",")
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .plus(me)
-            .distinct()
+        val members = memberPhonesCsv.split(",").map { it.trim() }.filter { it.isNotBlank() }.plus(me).distinct()
         if (members.size < 2 || groupName.isBlank()) return
         val groupId = "grp_${UUID.randomUUID().toString().take(8)}"
         viewModelScope.launch {
@@ -251,18 +253,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val chat = dao.getChat(chatId) ?: return@launch
             val me = _profile.value.phoneNumber
             val receivers = chat.memberIdsCsv.split(",").filter { it.isNotBlank() && it != me }
-            socket.send(
-                ChatPayload(
-                    id = UUID.randomUUID().toString(),
-                    chatId = chatId,
-                    senderId = me,
-                    receiverIds = receivers,
-                    content = "",
-                    timestamp = System.currentTimeMillis(),
-                    type = "ACK_READ",
-                    isGroup = chat.isGroup
-                )
-            )
+            socket.send(ChatPayload(UUID.randomUUID().toString(), chatId, me, receivers, "", System.currentTimeMillis(), type = "ACK_READ", isGroup = chat.isGroup))
         }
     }
 
@@ -271,46 +262,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _activeChatId.value = null
     }
 
-    fun sendTextMessage(text: String, replyTo: MessageEntity? = null) {
-        dispatchMessage(
-            content = text,
-            mediaType = "TEXT",
-            mediaBase64 = null,
-            durationSec = 0,
-            replyTo = replyTo
-        )
-    }
+    fun sendTextMessage(text: String, replyTo: MessageEntity? = null) = dispatchMessage(text, "TEXT", null, 0, replyTo)
 
     fun sendImageMessage(uri: Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             val b64 = MediaHelper.uriToCompressedBase64(appContext, uri) ?: return@launch
-            dispatchMessage(
-                content = "📷 Photo",
-                mediaType = "IMAGE",
-                mediaBase64 = b64,
-                durationSec = 0,
-                replyTo = null
-            )
+            dispatchMessage("📷 Photo", "IMAGE", b64, 0, null)
         }
     }
 
-    fun sendVoiceMessage(base64: String, durationSec: Int) {
-        dispatchMessage(
-            content = "🎤 Voice message (${durationSec}s)",
-            mediaType = "VOICE",
-            mediaBase64 = base64,
-            durationSec = durationSec,
-            replyTo = null
-        )
-    }
+    fun sendVoiceMessage(base64: String, durationSec: Int) = dispatchMessage("🎤 Voice message (${durationSec}s)", "VOICE", base64, durationSec, null)
 
-    private fun dispatchMessage(
-        content: String,
-        mediaType: String,
-        mediaBase64: String?,
-        durationSec: Int,
-        replyTo: MessageEntity?
-    ) {
+    private fun dispatchMessage(content: String, mediaType: String, mediaBase64: String?, durationSec: Int, replyTo: MessageEntity?) {
         val me = _profile.value.phoneNumber
         val chatId = _activeChatId.value ?: return
         viewModelScope.launch {
@@ -320,40 +283,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             val now = System.currentTimeMillis()
 
             dao.upsertMessage(
-                MessageEntity(
-                    id = msgId,
-                    chatId = chatId,
-                    senderId = me,
-                    content = content,
-                    timestamp = now,
-                    status = MessageStatus.SENDING,
-                    mediaType = mediaType,
-                    mediaBase64 = mediaBase64,
-                    durationSec = durationSec,
-                    replyToId = replyTo?.id,
-                    replyToText = replyTo?.content
-                )
+                MessageEntity(msgId, chatId, me, content, now, MessageStatus.SENDING, mediaType, mediaBase64, durationSec, replyTo?.id, replyTo?.content)
             )
             dao.upsertChat(chat.copy(lastMessage = content, lastTimestamp = now))
-
             socket.send(
-                ChatPayload(
-                    id = msgId,
-                    chatId = chatId,
-                    senderId = me,
-                    receiverIds = receivers,
-                    content = content,
-                    timestamp = now,
-                    status = MessageStatus.SENDING,
-                    type = "TEXT",
-                    mediaType = mediaType,
-                    mediaBase64 = mediaBase64,
-                    durationSec = durationSec,
-                    replyToId = replyTo?.id,
-                    replyToText = replyTo?.content,
-                    isGroup = chat.isGroup,
-                    groupName = if (chat.isGroup) chat.title else null
-                )
+                ChatPayload(msgId, chatId, me, receivers, content, now, MessageStatus.SENDING, "TEXT", mediaType, mediaBase64, durationSec, replyTo?.id, replyTo?.content, isGroup = chat.isGroup, groupName = if (chat.isGroup) chat.title else null)
             )
         }
     }
@@ -364,17 +298,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val chat = dao.getChat(chatId) ?: return@launch
             val receivers = chat.memberIdsCsv.split(",").filter { it.isNotBlank() && it != me }
-            socket.send(
-                ChatPayload(
-                    id = "typing-$me",
-                    chatId = chatId,
-                    senderId = me,
-                    receiverIds = receivers,
-                    content = if (isTyping) "START" else "STOP",
-                    timestamp = System.currentTimeMillis(),
-                    type = "TYPING"
-                )
-            )
+            socket.send(ChatPayload("typing-$me", chatId, me, receivers, if (isTyping) "START" else "STOP", System.currentTimeMillis(), type = "TYPING"))
         }
     }
 
@@ -385,18 +309,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             dao.updateReaction(messageId, emoji)
             val chat = dao.getChat(chatId) ?: return@launch
             val receivers = chat.memberIdsCsv.split(",").filter { it.isNotBlank() && it != me }
-            socket.send(
-                ChatPayload(
-                    id = messageId,
-                    chatId = chatId,
-                    senderId = me,
-                    receiverIds = receivers,
-                    content = "",
-                    timestamp = System.currentTimeMillis(),
-                    type = "REACTION",
-                    reaction = emoji
-                )
-            )
+            socket.send(ChatPayload(messageId, chatId, me, receivers, "", System.currentTimeMillis(), type = "REACTION", reaction = emoji))
         }
     }
 
@@ -407,77 +320,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             dao.markDeleted(messageId)
             val chat = dao.getChat(chatId) ?: return@launch
             val receivers = chat.memberIdsCsv.split(",").filter { it.isNotBlank() && it != me }
-            socket.send(
-                ChatPayload(
-                    id = messageId,
-                    chatId = chatId,
-                    senderId = me,
-                    receiverIds = receivers,
-                    content = "",
-                    timestamp = System.currentTimeMillis(),
-                    type = "DELETE"
-                )
-            )
+            socket.send(ChatPayload(messageId, chatId, me, receivers, "", System.currentTimeMillis(), type = "DELETE"))
         }
     }
 
-    // --- Status & Calls ---
     fun postStatus(caption: String, bgColorHex: Long, imageUri: Uri?) {
         viewModelScope.launch(Dispatchers.IO) {
             val img = imageUri?.let { MediaHelper.uriToCompressedBase64(appContext, it, 900) }
             if (caption.isBlank() && img == null) return@launch
-            dao.insertStatus(
-                StatusEntity(
-                    id = UUID.randomUUID().toString(),
-                    ownerName = "My status",
-                    ownerId = _profile.value.phoneNumber,
-                    caption = caption.trim(),
-                    imageBase64 = img,
-                    bgColorHex = bgColorHex,
-                    timestamp = System.currentTimeMillis()
-                )
-            )
+            dao.insertStatus(StatusEntity(UUID.randomUUID().toString(), "My status", _profile.value.phoneNumber, caption.trim(), img, bgColorHex, System.currentTimeMillis()))
         }
     }
 
-    fun markStatusViewed(id: String) {
-        viewModelScope.launch { dao.markStatusViewed(id) }
-    }
+    fun markStatusViewed(id: String) { viewModelScope.launch { dao.markStatusViewed(id) } }
 
     fun startCall(partnerId: String, title: String, isVideo: Boolean) {
         _activeCall.value = ActiveCallUiState(partnerId, title, isVideo)
-        viewModelScope.launch {
-            dao.insertCall(
-                CallLogEntity(
-                    id = UUID.randomUUID().toString(),
-                    partnerId = partnerId,
-                    title = title,
-                    timestamp = System.currentTimeMillis(),
-                    isVideo = isVideo
-                )
-            )
-        }
+        viewModelScope.launch { dao.insertCall(CallLogEntity(UUID.randomUUID().toString(), partnerId, title, System.currentTimeMillis(), isVideo)) }
     }
 
-    fun endCall() {
-        _activeCall.value = null
-    }
+    fun endCall() { _activeCall.value = null }
 
     private suspend fun handleIncoming(payload: ChatPayload) {
         val me = _profile.value.phoneNumber
         val resolvedChatId = if (payload.isGroup) payload.chatId else payload.senderId
-
         when (payload.type) {
             "PRESENCE" -> _onlineUsers.update { if (payload.content == "ONLINE") it + payload.senderId else it - payload.senderId }
             "TYPING" -> _typingUsers.update { if (payload.content == "START") it + payload.senderId else it - payload.senderId }
             "ACK_SENT" -> dao.updateMessageStatus(payload.id, MessageStatus.SENT)
             "ACK_DELIVERED" -> dao.updateMessageStatus(payload.id, MessageStatus.DELIVERED)
-            "ACK_READ" -> {
-                dao.observeMessages(resolvedChatId).firstOrNull()?.forEach { m ->
-                    if (m.senderId == me && m.status != MessageStatus.READ) {
-                        dao.updateMessageStatus(m.id, MessageStatus.READ)
-                    }
-                }
+            "ACK_READ" -> dao.observeMessages(resolvedChatId).firstOrNull()?.forEach { m ->
+                if (m.senderId == me && m.status != MessageStatus.READ) dao.updateMessageStatus(m.id, MessageStatus.READ)
             }
             "REACTION" -> dao.updateReaction(payload.id, payload.reaction)
             "DELETE" -> dao.markDeleted(payload.id)
@@ -485,45 +358,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val existingChat = dao.getChat(resolvedChatId)
                 val isOpen = _activeChatId.value == resolvedChatId
                 val unread = if (isOpen) 0 else (existingChat?.unreadCount ?: 0) + 1
-                val membersCsv = if (payload.isGroup) {
-                    (payload.receiverIds + payload.senderId).distinct().joinToString(",")
-                } else payload.senderId
-
-                dao.upsertChat(
-                    ChatEntity(
-                        chatId = resolvedChatId,
-                        title = payload.groupName ?: existingChat?.title ?: payload.senderId,
-                        isGroup = payload.isGroup,
-                        memberIdsCsv = membersCsv,
-                        lastMessage = payload.content,
-                        lastTimestamp = payload.timestamp,
-                        unreadCount = unread
-                    )
-                )
-                dao.upsertMessage(
-                    MessageEntity(
-                        id = payload.id,
-                        chatId = resolvedChatId,
-                        senderId = payload.senderId,
-                        content = payload.content,
-                        timestamp = payload.timestamp,
-                        status = MessageStatus.DELIVERED,
-                        mediaType = payload.mediaType,
-                        mediaBase64 = payload.mediaBase64,
-                        durationSec = payload.durationSec,
-                        replyToId = payload.replyToId,
-                        replyToText = payload.replyToText
-                    )
-                )
+                val membersCsv = if (payload.isGroup) (payload.receiverIds + payload.senderId).distinct().joinToString(",") else payload.senderId
+                dao.upsertChat(ChatEntity(resolvedChatId, payload.groupName ?: existingChat?.title ?: payload.senderId, payload.isGroup, membersCsv, payload.content, payload.timestamp, unread))
+                dao.upsertMessage(MessageEntity(payload.id, resolvedChatId, payload.senderId, payload.content, payload.timestamp, MessageStatus.DELIVERED, payload.mediaType, payload.mediaBase64, payload.durationSec, payload.replyToId, payload.replyToText))
                 if (isOpen && _profile.value.readReceipts) {
-                    socket.send(
-                        payload.copy(
-                            id = UUID.randomUUID().toString(),
-                            senderId = me,
-                            receiverIds = listOf(payload.senderId),
-                            type = "ACK_READ"
-                        )
-                    )
+                    socket.send(payload.copy(id = UUID.randomUUID().toString(), senderId = me, receiverIds = listOf(payload.senderId), type = "ACK_READ"))
                 }
             }
         }
