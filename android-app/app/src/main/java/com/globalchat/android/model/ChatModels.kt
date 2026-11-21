@@ -24,7 +24,10 @@ data class ChatPayload(
     val replyToText: String? = null,
     val reaction: String? = null,
     val isGroup: Boolean = false,
-    val groupName: String? = null
+    val groupName: String? = null,
+    val callVideo: Boolean = false,
+    val sdpMid: String? = null,
+    val sdpMLineIndex: Int = 0
 )
 
 @Serializable
@@ -52,6 +55,8 @@ data class RegisteredUserDto(val phone: String, val displayName: String, val abo
 data class ContactSyncResponse(val users: List<RegisteredUserDto> = emptyList())
 
 enum class OnboardingStep { WELCOME, PHONE, OTP, PROFILE, DONE }
+
+enum class CallStatus { OUTGOING_RINGING, INCOMING_RINGING, CONNECTING, CONNECTED }
 
 data class CountryOption(val name: String, val dialCode: String, val flag: String)
 
@@ -85,5 +90,8 @@ data class UserProfile(
 data class ActiveCallUiState(
     val partnerId: String,
     val title: String,
-    val isVideo: Boolean
+    val isVideo: Boolean,
+    val status: CallStatus = CallStatus.OUTGOING_RINGING,
+    val isMuted: Boolean = false,
+    val isSpeaker: Boolean = false
 )
