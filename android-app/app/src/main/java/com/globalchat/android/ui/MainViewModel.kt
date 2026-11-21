@@ -171,7 +171,33 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _isAuthLoading.value = true
 
         viewModelScope.launch(Dispatchers.IO) {
-            val res = socket.requestOtp(_profile.value.serverHost, fullPhone, cleanEmail)
+            val server = _profile.value.serverHost
+            if (prefs.isVerifiedOnThisDevice(fullPhone, cleanEmail)) {
+                val remote = socket.fetchProfile(server, fullPhone)
+                val cached = prefs.load()
+                val restored = cached.copy(
+                    phoneNumber = fullPhone,
+                    displayName = remote?.displayName?.takeIf { it.isNotBlank() } ?: cached.displayName.ifBlank { fullPhone },
+                    about = remote?.about?.takeIf { it.isNotBlank() } ?: cached.about,
+                    avatarBase64 = remote?.avatarBase64 ?: cached.avatarBase64,
+                    isRegistered = true
+                )
+                prefs.save(restored)
+                _profile.value = restored
+                _isAuthLoading.value = false
+                _onboardingStep.value = OnboardingStep.DONE
+                syncKeysAndPush(restored.serverHost, restored.phoneNumber)
+                socket.start(viewModelScope, restored.phoneNumber, restored.serverHost)
+                refreshStatuses()
+                return@launch
+            }
+
+            if (_profile.value.phoneNumber.isNotBlank() && _profile.value.phoneNumber != fullPhone) {
+                dao.clearAllMessages()
+                dao.clearAllChats()
+            }
+
+            val res = socket.requestOtp(server, fullPhone, cleanEmail)
             _isAuthLoading.value = false
             if (res.ok) _onboardingStep.value = OnboardingStep.OTP
             else _otpError.value = res.message
@@ -198,13 +224,37 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun verifyOtp(code: String) {
         val phone = _pendingPhone.value
+        val email = _pendingEmail.value
         _otpError.value = null
         _isAuthLoading.value = true
         viewModelScope.launch(Dispatchers.IO) {
-            val res = socket.verifyOtp(_profile.value.serverHost, phone, code.trim())
-            _isAuthLoading.value = false
-            if (res.ok) _onboardingStep.value = OnboardingStep.PROFILE
-            else _otpError.value = res.message
+            val server = _profile.value.serverHost
+            val res = socket.verifyOtp(server, phone, code.trim())
+            if (res.ok) {
+                prefs.saveVerifiedIdentity(phone, email)
+                val existingRemote = socket.fetchProfile(server, phone)
+                _isAuthLoading.value = false
+                if (existingRemote != null && existingRemote.displayName.isNotBlank() && existingRemote.displayName != phone) {
+                    val restored = _profile.value.copy(
+                        phoneNumber = phone,
+                        displayName = existingRemote.displayName,
+                        about = existingRemote.about,
+                        avatarBase64 = existingRemote.avatarBase64,
+                        isRegistered = true
+                    )
+                    prefs.save(restored)
+                    _profile.value = restored
+                    _onboardingStep.value = OnboardingStep.DONE
+                    syncKeysAndPush(restored.serverHost, restored.phoneNumber)
+                    socket.start(viewModelScope, restored.phoneNumber, restored.serverHost)
+                    refreshStatuses()
+                } else {
+                    _onboardingStep.value = OnboardingStep.PROFILE
+                }
+            } else {
+                _isAuthLoading.value = false
+                _otpError.value = res.message
+            }
         }
     }
 
@@ -219,6 +269,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isRegistered = true
             )
             prefs.save(updated)
+            prefs.saveVerifiedIdentity(_pendingPhone.value, _pendingEmail.value)
             _profile.value = updated
             _onboardingStep.value = OnboardingStep.DONE
             socket.syncProfile(updated.serverHost, updated.phoneNumber, updated.displayName, updated.about, updated.avatarBase64)
@@ -228,7 +279,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun updateProfileAndServer(name: String, about: String, serverHost: String, readReceipts: Boolean, avatarUri: Uri?) {
+    fun updateProfileAndServer(
+        name: String,
+        about: String,
+        serverHost: String,
+        readReceipts: Boolean,
+        themeMode: String,
+        avatarUri: Uri?
+    ) {
         viewModelScope.launch(Dispatchers.IO) {
             val current = _profile.value
             val avatarB64 = if (avatarUri != null) MediaHelper.uriToCompressedBase64(appContext, avatarUri, 320) else current.avatarBase64
@@ -237,6 +295,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 about = about.trim().ifBlank { current.about },
                 serverHost = serverHost.trim().ifBlank { current.serverHost },
                 readReceipts = readReceipts,
+                themeMode = themeMode,
                 avatarBase64 = avatarB64
             )
             prefs.save(updated)
@@ -250,15 +309,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun logOut() {
         rtcManager.close()
         socket.stop()
-        prefs.clear()
-        _profile.value = UserProfile()
+        prefs.clearSessionOnly()
         _activeChatId.value = null
         _activeCall.value = null
         _onboardingStep.value = OnboardingStep.WELCOME
-        viewModelScope.launch {
-            dao.clearAllMessages()
-            dao.clearAllChats()
-        }
     }
 
     fun loadDeviceContacts() {
@@ -281,7 +335,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 else c
             }.sortedByDescending { it.isOnGlobalChat }
 
-            // Also update avatars on existing chats
             registered.values.forEach { reg ->
                 dao.getChat(reg.phone)?.let { existing ->
                     if (reg.avatarBase64 != null && existing.avatarBase64 != reg.avatarBase64) {
