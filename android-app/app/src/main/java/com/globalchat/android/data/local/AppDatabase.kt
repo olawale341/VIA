@@ -160,7 +160,8 @@ class ProfilePrefs(context: Context) {
         avatarBase64 = prefs.getString("avatar", null),
         serverHost = prefs.getString("server", DEFAULT_SERVER_HOST) ?: DEFAULT_SERVER_HOST,
         readReceipts = prefs.getBoolean("read_receipts", true),
-        isRegistered = prefs.getBoolean("registered", false)
+        isRegistered = prefs.getBoolean("registered", false),
+        themeMode = prefs.getString("theme_mode", "SYSTEM") ?: "SYSTEM"
     )
 
     fun save(profile: UserProfile) {
@@ -172,10 +173,24 @@ class ProfilePrefs(context: Context) {
             .putString("server", profile.serverHost)
             .putBoolean("read_receipts", profile.readReceipts)
             .putBoolean("registered", profile.isRegistered)
+            .putString("theme_mode", profile.themeMode)
             .apply()
     }
 
-    fun clear() {
-        prefs.edit().clear().apply()
+    fun saveVerifiedIdentity(phone: String, email: String) {
+        prefs.edit()
+            .putString("verified_phone", phone.trim())
+            .putString("verified_email", email.trim())
+            .apply()
+    }
+
+    fun isVerifiedOnThisDevice(phone: String, email: String): Boolean {
+        val vp = prefs.getString("verified_phone", "") ?: ""
+        val ve = prefs.getString("verified_email", "") ?: ""
+        return vp.isNotBlank() && vp == phone.trim() && ve.equals(email.trim(), ignoreCase = true)
+    }
+
+    fun clearSessionOnly() {
+        prefs.edit().putBoolean("registered", false).apply()
     }
 }
