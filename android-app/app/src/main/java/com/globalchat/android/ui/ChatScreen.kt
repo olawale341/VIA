@@ -30,6 +30,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
@@ -75,7 +76,7 @@ fun ChatScreen(
     }
 
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+        if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size)
     }
 
     LaunchedEffect(inputText) {
@@ -232,6 +233,21 @@ fun ChatScreen(
             verticalArrangement = Arrangement.spacedBy(6.dp),
             contentPadding = PaddingValues(vertical = 10.dp)
         ) {
+            item {
+                Box(modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp), contentAlignment = Alignment.Center) {
+                    Surface(color = Color(0xFFFFF3C4), shape = RoundedCornerShape(10.dp)) {
+                        Text(
+                            text = if (chat.isGroup) "🔒 Group chat on GlobalChat"
+                            else "🔒 Messages and calls are end-to-end encrypted. No one outside of this chat, not even GlobalChat, can read or listen to them.",
+                            fontSize = 11.sp,
+                            color = Color(0xFF54421A),
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
+                        )
+                    }
+                }
+            }
+
             items(messages, key = { it.id }) { msg ->
                 val isMine = msg.senderId == myUserId
                 val time = remember(msg.timestamp) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp)) }
