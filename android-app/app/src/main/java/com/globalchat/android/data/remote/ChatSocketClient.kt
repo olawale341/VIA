@@ -50,11 +50,15 @@ class ChatSocketClient {
         return cleanHost to isLocal
     }
 
-    suspend fun requestOtp(serverHost: String, phone: String, email: String): OtpApiResult {
+    private fun httpBase(serverHost: String): String {
         val (host, isLocal) = parseHost(serverHost)
-        val httpScheme = if (isLocal) "http" else "https"
+        val scheme = if (isLocal) "http" else "https"
+        return "$scheme://$host"
+    }
+
+    suspend fun requestOtp(serverHost: String, phone: String, email: String): OtpApiResult {
         return try {
-            val resp = client.post("$httpScheme://$host/auth/request-otp") {
+            val resp = client.post("${httpBase(serverHost)}/auth/request-otp") {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString(OtpRequestBody(phone, email)))
             }
@@ -65,16 +69,36 @@ class ChatSocketClient {
     }
 
     suspend fun verifyOtp(serverHost: String, phone: String, code: String): OtpApiResult {
-        val (host, isLocal) = parseHost(serverHost)
-        val httpScheme = if (isLocal) "http" else "https"
         return try {
-            val resp = client.post("$httpScheme://$host/auth/verify-otp") {
+            val resp = client.post("${httpBase(serverHost)}/auth/verify-otp") {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString(OtpVerifyBody(phone, code)))
             }
             json.decodeFromString<OtpApiResult>(resp.bodyAsText())
         } catch (e: Exception) {
             OtpApiResult(false, "Network error: ${e.localizedMessage}")
+        }
+    }
+
+    suspend fun syncProfile(serverHost: String, phone: String, displayName: String, about: String) {
+        try {
+            client.post("${httpBase(serverHost)}/profile/sync") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(ProfileSyncBody(phone, displayName, about)))
+            }
+        } catch (_: Exception) { }
+    }
+
+    suspend fun syncContacts(serverHost: String, phones: List<String>): List<RegisteredUserDto> {
+        if (phones.isEmpty()) return emptyList()
+        return try {
+            val resp = client.post("${httpBase(serverHost)}/contacts/sync") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(ContactSyncRequest(phones)))
+            }
+            json.decodeFromString<ContactSyncResponse>(resp.bodyAsText()).users
+        } catch (_: Exception) {
+            emptyList()
         }
     }
 
