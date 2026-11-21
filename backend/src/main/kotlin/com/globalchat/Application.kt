@@ -1,5 +1,7 @@
 package com.globalchat
 
+import com.zaxxer.hikari.HikariConfig
+import com.zaxxer.hikari.HikariDataSource
 import io.ktor.client.*
 import io.ktor.client.engine.cio.*
 import io.ktor.client.request.*
@@ -16,9 +18,10 @@ import io.ktor.websocket.*
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import java.net.URI
 import java.security.SecureRandom
+import java.sql.Connection
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.CopyOnWriteArrayList
 import kotlin.time.Duration.Companion.seconds
 
 @Serializable
@@ -54,6 +57,18 @@ data class OtpVerifyBody(val phone: String, val code: String)
 data class OtpApiResult(val ok: Boolean, val message: String)
 
 @Serializable
+data class ProfileSyncBody(val phone: String, val displayName: String, val about: String)
+
+@Serializable
+data class ContactSyncRequest(val phones: List<String>)
+
+@Serializable
+data class RegisteredUserDto(val phone: String, val displayName: String, val about: String)
+
+@Serializable
+data class ContactSyncResponse(val users: List<RegisteredUserDto>)
+
+@Serializable
 data class BrevoSender(val name: String, val email: String)
 
 @Serializable
@@ -67,16 +82,177 @@ data class BrevoEmailPayload(
     val htmlContent: String
 )
 
-data class PendingOtp(val code: String, val expiresAtMs: Long)
+data class PendingOtp(val code: String, val email: String, val expiresAtMs: Long)
 
 private val json = Json { ignoreUnknownKeys = true }
 private val httpClient = HttpClient(CIO)
 private val random = SecureRandom()
 private val otpStore = ConcurrentHashMap<String, PendingOtp>()
 private val activeConnections = ConcurrentHashMap<String, DefaultWebSocketServerSession>()
-private val offlineQueue = ConcurrentHashMap<String, CopyOnWriteArrayList<ChatPayload>>()
+
+object Db {
+    private var dataSource: HikariDataSource? = null
+
+    fun init() {
+        val rawUrl = System.getenv("DATABASE_URL")?.trim().orEmpty()
+        if (rawUrl.isBlank()) {
+            println("WARNING: DATABASE_URL not set; running without Postgres persistence.")
+            return
+        }
+        // Convert postgresql://user:pass@host/db?sslmode=require -> jdbc:postgresql://...
+        val jdbcUrl = if (rawUrl.startsWith("jdbc:")) rawUrl else {
+            val uri = URI(rawUrl.replaceFirst("postgresql://", "http://").replaceFirst("postgres://", "http://"))
+            val userInfo = uri.userInfo ?: ""
+            val user = userInfo.substringBefore(":")
+            val pass = userInfo.substringAfter(":", "")
+            val portPart = if (uri.port > 0) ":${uri.port}" else ""
+            val queryPart = if (!uri.query.isNullOrBlank()) "?${uri.query}" else "?sslmode=require"
+            "jdbc:postgresql://${uri.host}$portPart${uri.path}$queryPart".also {
+                val cfg = HikariConfig().apply {
+                    this.jdbcUrl = it
+                    username = user
+                    password = pass
+                    maximumPoolSize = 5
+                }
+                dataSource = HikariDataSource(cfg)
+            }
+            return
+        }
+
+        dataSource = HikariDataSource(HikariConfig().apply {
+            this.jdbcUrl = jdbcUrl
+            maximumPoolSize = 5
+        })
+    }
+
+    fun ensureTables() {
+        withConn { conn ->
+            conn.createStatement().use { st ->
+                st.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS users (
+                        phone TEXT PRIMARY KEY,
+                        email TEXT NOT NULL DEFAULT '',
+                        display_name TEXT NOT NULL DEFAULT '',
+                        about TEXT NOT NULL DEFAULT 'Hey there! I am using GlobalChat.',
+                        fcm_token TEXT NOT NULL DEFAULT '',
+                        public_key TEXT NOT NULL DEFAULT '',
+                        updated_at BIGINT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+                st.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS offline_messages (
+                        id TEXT PRIMARY KEY,
+                        target_phone TEXT NOT NULL,
+                        payload_json TEXT NOT NULL,
+                        created_at BIGINT NOT NULL
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+    }
+
+    fun upsertUser(phone: String, email: String?, name: String?, about: String?) {
+        withConn { conn ->
+            conn.prepareStatement(
+                """
+                INSERT INTO users (phone, email, display_name, about, updated_at)
+                VALUES (?, COALESCE(?, ''), COALESCE(?, ?), COALESCE(?, 'Hey there! I am using GlobalChat.'), ?)
+                ON CONFLICT (phone) DO UPDATE SET
+                    email = CASE WHEN EXCLUDED.email <> '' THEN EXCLUDED.email ELSE users.email END,
+                    display_name = CASE WHEN EXCLUDED.display_name <> '' THEN EXCLUDED.display_name ELSE users.display_name END,
+                    about = CASE WHEN EXCLUDED.about <> '' THEN EXCLUDED.about ELSE users.about END,
+                    updated_at = EXCLUDED.updated_at
+                """.trimIndent()
+            ).use { ps ->
+                ps.setString(1, phone)
+                ps.setString(2, email)
+                ps.setString(3, name)
+                ps.setString(4, phone)
+                ps.setString(5, about)
+                ps.setLong(6, System.currentTimeMillis())
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    fun findRegisteredUsers(phones: List<String>): List<RegisteredUserDto> {
+        if (phones.isEmpty()) return emptyList()
+        val results = mutableListOf<RegisteredUserDto>()
+        withConn { conn ->
+            val placeholders = phones.joinToString(",") { "?" }
+            conn.prepareStatement("SELECT phone, display_name, about FROM users WHERE phone IN ($placeholders)").use { ps ->
+                phones.forEachIndexed { idx, p -> ps.setString(idx + 1, p) }
+                ps.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        results.add(
+                            RegisteredUserDto(
+                                phone = rs.getString("phone"),
+                                displayName = rs.getString("display_name"),
+                                about = rs.getString("about")
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        return results
+    }
+
+    fun queueOfflineMessage(targetPhone: String, payload: ChatPayload) {
+        withConn { conn ->
+            conn.prepareStatement(
+                """
+                INSERT INTO offline_messages (id, target_phone, payload_json, created_at)
+                VALUES (?, ?, ?, ?) ON CONFLICT (id) DO NOTHING
+                """.trimIndent()
+            ).use { ps ->
+                ps.setString(1, "${payload.id}_$targetPhone")
+                ps.setString(2, targetPhone)
+                ps.setString(3, json.encodeToString(payload))
+                ps.setLong(4, System.currentTimeMillis())
+                ps.executeUpdate()
+            }
+        }
+    }
+
+    fun drainOfflineMessages(targetPhone: String): List<ChatPayload> {
+        val list = mutableListOf<ChatPayload>()
+        withConn { conn ->
+            conn.prepareStatement("SELECT id, payload_json FROM offline_messages WHERE target_phone = ? ORDER BY created_at ASC").use { ps ->
+                ps.setString(1, targetPhone)
+                ps.executeQuery().use { rs ->
+                    while (rs.next()) {
+                        list.add(json.decodeFromString<ChatPayload>(rs.getString("payload_json")))
+                    }
+                }
+            }
+            if (list.isNotEmpty()) {
+                conn.prepareStatement("DELETE FROM offline_messages WHERE target_phone = ?").use { del ->
+                    del.setString(1, targetPhone)
+                    del.executeUpdate()
+                }
+            }
+        }
+        return list
+    }
+
+    private inline fun withConn(block: (Connection) -> Unit) {
+        val ds = dataSource ?: return
+        try {
+            ds.connection.use(block)
+        } catch (e: Exception) {
+            println("DB ERROR: ${e.localizedMessage}")
+        }
+    }
+}
 
 fun main() {
+    Db.init()
+    Db.ensureTables()
     val port = System.getenv("PORT")?.toIntOrNull() ?: 8080
     embeddedServer(Netty, port = port, host = "0.0.0.0", module = Application::module)
         .start(wait = true)
@@ -99,7 +275,6 @@ fun Application.module() {
             val body = json.decodeFromString<OtpRequestBody>(call.receiveText())
             val apiKey = System.getenv("BREVO_API_KEY").orEmpty().trim()
             val senderEmail = System.getenv("BREVO_SENDER_EMAIL").orEmpty().trim()
-
             if (apiKey.isBlank() || senderEmail.isBlank()) {
                 call.respondText(
                     json.encodeToString(OtpApiResult(false, "Server is missing BREVO_API_KEY or BREVO_SENDER_EMAIL")),
@@ -110,7 +285,7 @@ fun Application.module() {
             }
 
             val code = (100000 + random.nextInt(900000)).toString()
-            otpStore[body.phone.trim()] = PendingOtp(code, System.currentTimeMillis() + 10 * 60_000L)
+            otpStore[body.phone.trim()] = PendingOtp(code, body.email.trim(), System.currentTimeMillis() + 10 * 60_000L)
 
             val brevoBody = BrevoEmailPayload(
                 sender = BrevoSender("GlobalChat", senderEmail),
@@ -126,62 +301,48 @@ fun Application.module() {
             }
 
             if (resp.status.isSuccess()) {
-                call.respondText(
-                    json.encodeToString(OtpApiResult(true, "Code sent to ${body.email}")),
-                    ContentType.Application.Json
-                )
+                call.respondText(json.encodeToString(OtpApiResult(true, "Code sent")), ContentType.Application.Json)
             } else {
-                val err = resp.bodyAsText()
-                println("BREVO ERROR: ${resp.status} $err")
-                call.respondText(
-                    json.encodeToString(OtpApiResult(false, "Email failed (${resp.status.value})")),
-                    ContentType.Application.Json,
-                    HttpStatusCode.BadGateway
-                )
+                call.respondText(json.encodeToString(OtpApiResult(false, "Email failed (${resp.status.value})")), ContentType.Application.Json, HttpStatusCode.BadGateway)
             }
         }
 
         post("/auth/verify-otp") {
             val body = json.decodeFromString<OtpVerifyBody>(call.receiveText())
-            val pending = otpStore[body.phone.trim()]
-            val valid = pending != null &&
-                System.currentTimeMillis() <= pending.expiresAtMs &&
-                pending.code == body.code.trim()
-
+            val phone = body.phone.trim()
+            val pending = otpStore[phone]
+            val valid = pending != null && System.currentTimeMillis() <= pending.expiresAtMs && pending.code == body.code.trim()
             if (valid) {
-                otpStore.remove(body.phone.trim())
+                otpStore.remove(phone)
+                Db.upsertUser(phone, pending!!.email, null, null)
                 call.respondText(json.encodeToString(OtpApiResult(true, "Verified")), ContentType.Application.Json)
             } else {
-                call.respondText(
-                    json.encodeToString(OtpApiResult(false, "Invalid or expired code")),
-                    ContentType.Application.Json,
-                    HttpStatusCode.Unauthorized
-                )
+                call.respondText(json.encodeToString(OtpApiResult(false, "Invalid or expired code")), ContentType.Application.Json, HttpStatusCode.Unauthorized)
             }
         }
 
+        post("/profile/sync") {
+            val body = json.decodeFromString<ProfileSyncBody>(call.receiveText())
+            Db.upsertUser(body.phone.trim(), null, body.displayName.trim(), body.about.trim())
+            call.respondText(json.encodeToString(OtpApiResult(true, "Profile synced")), ContentType.Application.Json)
+        }
+
+        post("/contacts/sync") {
+            val body = json.decodeFromString<ContactSyncRequest>(call.receiveText())
+            val found = Db.findRegisteredUsers(body.phones.distinct().take(500))
+            call.respondText(json.encodeToString(ContactSyncResponse(found)), ContentType.Application.Json)
+        }
+
         webSocket("/chat/{userId}") {
-            val userId = call.parameters["userId"] ?: return@webSocket close(
-                CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Missing userId")
-            )
+            val userId = call.parameters["userId"] ?: return@webSocket close(CloseReason(CloseReason.Codes.VIOLATED_POLICY, "Missing userId"))
             activeConnections[userId] = this
             broadcastPresence(userId, true)
             activeConnections.keys.filter { it != userId }.forEach { onlineUser ->
-                sendPayload(
-                    this,
-                    ChatPayload(
-                        id = "presence-$onlineUser",
-                        chatId = onlineUser,
-                        senderId = onlineUser,
-                        receiverIds = listOf(userId),
-                        content = "ONLINE",
-                        timestamp = System.currentTimeMillis(),
-                        type = "PRESENCE"
-                    )
-                )
+                sendPayload(this, ChatPayload("presence-$onlineUser", onlineUser, onlineUser, listOf(userId), "ONLINE", System.currentTimeMillis(), type = "PRESENCE"))
             }
 
-            offlineQueue.remove(userId)?.forEach { msg ->
+            // Deliver messages persisted in PostgreSQL while user was offline
+            Db.drainOfflineMessages(userId).forEach { msg ->
                 sendPayload(this, msg)
                 activeConnections[msg.senderId]?.let { s ->
                     sendPayload(s, msg.copy(type = "ACK_DELIVERED", status = MessageStatus.DELIVERED, mediaBase64 = null))
@@ -190,9 +351,7 @@ fun Application.module() {
 
             try {
                 for (frame in incoming) {
-                    if (frame is Frame.Text) {
-                        handlePayload(json.decodeFromString(frame.readText()))
-                    }
+                    if (frame is Frame.Text) handlePayload(json.decodeFromString(frame.readText()))
                 }
             } catch (_: Exception) {
             } finally {
@@ -207,9 +366,7 @@ private suspend fun handlePayload(msg: ChatPayload) {
     val senderSession = activeConnections[msg.senderId]
     when (msg.type) {
         "TEXT" -> {
-            senderSession?.let {
-                sendPayload(it, msg.copy(type = "ACK_SENT", status = MessageStatus.SENT, mediaBase64 = null))
-            }
+            senderSession?.let { sendPayload(it, msg.copy(type = "ACK_SENT", status = MessageStatus.SENT, mediaBase64 = null)) }
             var delivered = false
             msg.receiverIds.filter { it != msg.senderId }.forEach { targetId ->
                 val target = activeConnections[targetId]
@@ -217,20 +374,18 @@ private suspend fun handlePayload(msg: ChatPayload) {
                     sendPayload(target, msg)
                     delivered = true
                 } else {
-                    offlineQueue.computeIfAbsent(targetId) { CopyOnWriteArrayList() }.add(msg)
+                    Db.queueOfflineMessage(targetId, msg)
                 }
             }
             if (delivered) {
-                senderSession?.let {
-                    sendPayload(it, msg.copy(type = "ACK_DELIVERED", status = MessageStatus.DELIVERED, mediaBase64 = null))
-                }
+                senderSession?.let { sendPayload(it, msg.copy(type = "ACK_DELIVERED", status = MessageStatus.DELIVERED, mediaBase64 = null)) }
             }
         }
         "ACK_READ", "TYPING", "REACTION", "DELETE" -> {
             msg.receiverIds.filter { it != msg.senderId }.forEach { targetId ->
                 val target = activeConnections[targetId]
                 if (target != null) sendPayload(target, msg)
-                else if (msg.type != "TYPING") offlineQueue.computeIfAbsent(targetId) { CopyOnWriteArrayList() }.add(msg)
+                else if (msg.type != "TYPING") Db.queueOfflineMessage(targetId, msg)
             }
         }
     }
@@ -238,19 +393,12 @@ private suspend fun handlePayload(msg: ChatPayload) {
 
 private suspend fun broadcastPresence(userId: String, isOnline: Boolean) {
     val presence = ChatPayload(
-        id = "presence-$userId-${System.currentTimeMillis()}",
-        chatId = userId,
-        senderId = userId,
-        receiverIds = emptyList(),
-        content = if (isOnline) "ONLINE" else "OFFLINE",
-        timestamp = System.currentTimeMillis(),
-        type = "PRESENCE"
+        "presence-$userId-${System.currentTimeMillis()}", userId, userId, emptyList(),
+        if (isOnline) "ONLINE" else "OFFLINE", System.currentTimeMillis(), type = "PRESENCE"
     )
     activeConnections.forEach { (id, session) -> if (id != userId) sendPayload(session, presence) }
 }
 
 private suspend fun sendPayload(session: DefaultWebSocketServerSession, payload: ChatPayload) {
-    try {
-        session.send(Frame.Text(json.encodeToString(payload)))
-    } catch (_: Exception) { }
+    try { session.send(Frame.Text(json.encodeToString(payload))) } catch (_: Exception) { }
 }
