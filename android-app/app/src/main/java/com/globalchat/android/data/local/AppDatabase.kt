@@ -2,6 +2,7 @@ package com.globalchat.android.data.local
 
 import android.content.Context
 import androidx.room.*
+import com.globalchat.android.model.DEFAULT_SERVER_HOST
 import com.globalchat.android.model.MessageStatus
 import com.globalchat.android.model.UserProfile
 import kotlinx.coroutines.flow.Flow
@@ -152,7 +153,7 @@ class ProfilePrefs(context: Context) {
         displayName = prefs.getString("name", "") ?: "",
         about = prefs.getString("about", "Hey there! I am using GlobalChat.") ?: "Hey there! I am using GlobalChat.",
         avatarBase64 = prefs.getString("avatar", null),
-        serverHost = prefs.getString("server", "10.0.2.2:8080") ?: "10.0.2.2:8080",
+        serverHost = prefs.getString("server", DEFAULT_SERVER_HOST) ?: DEFAULT_SERVER_HOST,
         readReceipts = prefs.getBoolean("read_receipts", true),
         isRegistered = prefs.getBoolean("registered", false)
     )
