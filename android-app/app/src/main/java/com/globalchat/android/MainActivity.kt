@@ -5,12 +5,18 @@ import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.runtime.*
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -21,15 +27,27 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContent {
-            MaterialTheme {
-                GlobalChatApp()
+            val vm: MainViewModel = viewModel()
+            val profile by vm.profile.collectAsState()
+
+            GlobalChatTheme(themeMode = profile.themeMode) {
+                val p = LocalWaPalette.current
+                LaunchedEffect(p.isDark) {
+                    val barColor = p.topBar.toArgb()
+                    val style = if (p.isDark) SystemBarStyle.dark(barColor) else SystemBarStyle.light(barColor, barColor)
+                    enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+                }
+
+                Box(modifier = Modifier.fillMaxSize().systemBarsPadding()) {
+                    GlobalChatApp(vm)
+                }
             }
         }
     }
 }
 
 @Composable
-fun GlobalChatApp(vm: MainViewModel = viewModel()) {
+fun GlobalChatApp(vm: MainViewModel) {
     val context = LocalContext.current
     val step by vm.onboardingStep.collectAsState()
     val profile by vm.profile.collectAsState()
@@ -130,6 +148,7 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
                     ChatScreen(
                         chat = currentChat,
                         myUserId = profile.phoneNumber,
+                        myAvatarBase64 = profile.avatarBase64,
                         isPartnerOnline = onlineUsers.contains(currentChat.chatId),
                         isPartnerTyping = typingUsers.any { currentChat.memberIdsCsv.contains(it) },
                         messages = messages,
@@ -157,6 +176,7 @@ fun GlobalChatApp(vm: MainViewModel = viewModel()) {
                     statuses = statuses,
                     callLogs = callLogs,
                     onRequestLoadContacts = vm::loadDeviceContacts,
+                    onRefreshStatuses = vm::refreshStatuses,
                     onChatClick = vm::openChat,
                     onStartNewChat = vm::startChat,
                     onCreateGroup = vm::createGroup,
