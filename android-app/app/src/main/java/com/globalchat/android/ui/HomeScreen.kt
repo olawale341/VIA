@@ -6,10 +6,12 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
@@ -43,7 +45,7 @@ import com.globalchat.android.model.UserProfile
 import java.text.SimpleDateFormat
 import java.util.*
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun HomeScreen(
     profile: UserProfile,
@@ -53,10 +55,12 @@ fun HomeScreen(
     phoneContacts: List<PhoneContact>,
     statuses: List<StatusEntity>,
     callLogs: List<CallLogEntity>,
+    getAvatarUrl: (String, Long) -> String?,
     onRequestLoadContacts: () -> Unit,
     onRefreshStatuses: () -> Unit,
     onChatClick: (String) -> Unit,
-    onStartNewChat: (String, String?, String?) -> Unit,
+    onDeleteChat: (String) -> Unit,
+    onStartNewChat: (String, String?, String?, Long) -> Unit,
     onCreateGroup: (String, String) -> Unit,
     onPostStatus: (String, Long, Uri?) -> Unit,
     onStatusViewed: (String) -> Unit,
@@ -75,6 +79,7 @@ fun HomeScreen(
     var showGroupDialog by remember { mutableStateOf(false) }
     var showStatusComposer by remember { mutableStateOf(false) }
     var showLogoutConfirm by remember { mutableStateOf(false) }
+    var chatToDelete by remember { mutableStateOf<ChatEntity?>(null) }
     var viewingStatus by remember { mutableStateOf<StatusEntity?>(null) }
 
     val contactPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
@@ -116,12 +121,7 @@ fun HomeScreen(
                         )
                     } else {
                         Column {
-                            Text(
-                                "GlobalChat",
-                                color = if (p.isDark) p.textPrimary else p.accent,
-                                fontWeight = FontWeight.Bold,
-                                fontSize = 22.sp
-                            )
+                            Text("GlobalChat", color = if (p.isDark) p.textPrimary else p.accent, fontWeight = FontWeight.Bold, fontSize = 22.sp)
                             Text(
                                 text = if (isConnected) "Connected" else "Connecting...",
                                 fontSize = 11.sp,
@@ -132,30 +132,16 @@ fun HomeScreen(
                 },
                 colors = TopAppBarDefaults.topAppBarColors(containerColor = p.topBar),
                 actions = {
-                    IconButton(onClick = { showStatusComposer = true }) {
-                        Icon(Icons.Default.PhotoCamera, "Camera", tint = p.textPrimary)
-                    }
+                    IconButton(onClick = { showStatusComposer = true }) { Icon(Icons.Default.PhotoCamera, "Camera", tint = p.textPrimary) }
                     IconButton(onClick = { showSearch = !showSearch; if (!showSearch) searchQuery = "" }) {
                         Icon(if (showSearch) Icons.Default.Close else Icons.Default.Search, "Search", tint = p.textPrimary)
                     }
                     Box {
-                        IconButton(onClick = { showOverflowMenu = true }) {
-                            Icon(Icons.Default.MoreVert, "Menu", tint = p.textPrimary)
-                        }
-                        DropdownMenu(
-                            expanded = showOverflowMenu,
-                            onDismissRequest = { showOverflowMenu = false },
-                            containerColor = p.surface
-                        ) {
-                            DropdownMenuItem(text = { Text("New group", color = p.textPrimary) }, onClick = {
-                                showOverflowMenu = false; showGroupDialog = true
-                            })
-                            DropdownMenuItem(text = { Text("Settings", color = p.textPrimary) }, onClick = {
-                                showOverflowMenu = false; onOpenSettings()
-                            })
-                            DropdownMenuItem(text = { Text("Log out", color = p.danger) }, onClick = {
-                                showOverflowMenu = false; showLogoutConfirm = true
-                            })
+                        IconButton(onClick = { showOverflowMenu = true }) { Icon(Icons.Default.MoreVert, "Menu", tint = p.textPrimary) }
+                        DropdownMenu(expanded = showOverflowMenu, onDismissRequest = { showOverflowMenu = false }, containerColor = p.surface) {
+                            DropdownMenuItem(text = { Text("New group", color = p.textPrimary) }, onClick = { showOverflowMenu = false; showGroupDialog = true })
+                            DropdownMenuItem(text = { Text("Settings", color = p.textPrimary) }, onClick = { showOverflowMenu = false; onOpenSettings() })
+                            DropdownMenuItem(text = { Text("Log out", color = p.danger) }, onClick = { showOverflowMenu = false; showLogoutConfirm = true })
                         }
                     }
                 }
@@ -207,11 +193,14 @@ fun HomeScreen(
                 0 -> ChatsTab(
                     chats = chats.filter { searchQuery.isBlank() || it.title.contains(searchQuery, true) },
                     onlineUsers = onlineUsers,
-                    onChatClick = onChatClick
+                    getAvatarUrl = getAvatarUrl,
+                    onChatClick = onChatClick,
+                    onChatLongClick = { chatToDelete = it }
                 )
                 1 -> UpdatesTab(
                     myProfile = profile,
                     statuses = statuses,
+                    getAvatarUrl = getAvatarUrl,
                     onAddStatus = { showStatusComposer = true },
                     onRefresh = onRefreshStatuses,
                     onViewStatus = {
@@ -220,9 +209,27 @@ fun HomeScreen(
                     }
                 )
                 2 -> CommunitiesTab(onCreateGroup = { showGroupDialog = true })
-                3 -> CallsTab(callLogs = callLogs, onCallClick = { onStartCall(it.partnerId, it.title, it.isVideo) })
+                3 -> CallsTab(callLogs = callLogs, getAvatarUrl = getAvatarUrl, onCallClick = { onStartCall(it.partnerId, it.title, it.isVideo) })
             }
         }
+    }
+
+    // Delete Entire Chat (Local per-user only)
+    chatToDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { chatToDelete = null },
+            containerColor = p.surface,
+            title = { Text("Delete chat with ${target.title}?", color = p.textPrimary) },
+            text = { Text("This deletes the conversation from your chat list only. The other person keeps their copy.", color = p.textSecondary) },
+            confirmButton = {
+                TextButton(onClick = { onDeleteChat(target.chatId); chatToDelete = null }) {
+                    Text("Delete chat", color = p.danger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { chatToDelete = null }) { Text("Cancel", color = p.accent) }
+            }
+        )
     }
 
     if (showLogoutConfirm) {
@@ -231,14 +238,8 @@ fun HomeScreen(
             containerColor = p.surface,
             title = { Text("Log out of GlobalChat?", color = p.textPrimary) },
             text = { Text("You can log straight back in anytime using your same phone number and email.", color = p.textSecondary) },
-            confirmButton = {
-                TextButton(onClick = { showLogoutConfirm = false; onLogOut() }) {
-                    Text("Log out", color = p.danger)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = { showLogoutConfirm = false }) { Text("Cancel", color = p.accent) }
-            }
+            confirmButton = { TextButton(onClick = { showLogoutConfirm = false; onLogOut() }) { Text("Log out", color = p.danger) } },
+            dismissButton = { TextButton(onClick = { showLogoutConfirm = false }) { Text("Cancel", color = p.accent) } }
         )
     }
 
@@ -257,10 +258,7 @@ fun HomeScreen(
                             }
                         },
                         headlineContent = { Text("Enter phone number manually", fontWeight = FontWeight.SemiBold, color = p.textPrimary) },
-                        modifier = Modifier.clickable {
-                            showContactPicker = false
-                            showManualNumberDialog = true
-                        }
+                        modifier = Modifier.clickable { showContactPicker = false; showManualNumberDialog = true }
                     )
                     HorizontalDivider(color = p.divider)
                     if (phoneContacts.isEmpty()) {
@@ -268,17 +266,14 @@ fun HomeScreen(
                     } else {
                         LazyColumn {
                             items(phoneContacts) { c ->
-                                val bmp = remember(c.avatarBase64) { MediaHelper.decodeBase64ToImage(c.avatarBase64) }
                                 ListItem(
                                     colors = ListItemDefaults.colors(containerColor = Color.Transparent),
                                     leadingContent = {
-                                        Box(
-                                            Modifier.size(42.dp).clip(CircleShape).background(if (c.isOnGlobalChat) p.accent else p.surfaceVariant),
-                                            Alignment.Center
-                                        ) {
-                                            if (bmp != null) Image(bmp, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                                            else Icon(Icons.Default.Person, null, tint = if (c.isOnGlobalChat) p.accentText else p.textPrimary)
-                                        }
+                                        AvatarImage(
+                                            avatarUrl = getAvatarUrl(c.phoneNumber, c.avatarVersion),
+                                            avatarBase64 = c.avatarBase64,
+                                            size = 42.dp
+                                        )
                                     },
                                     headlineContent = { Text(c.name, fontWeight = FontWeight.Medium, color = p.textPrimary) },
                                     supportingContent = {
@@ -291,7 +286,7 @@ fun HomeScreen(
                                     },
                                     modifier = Modifier.clickable {
                                         showContactPicker = false
-                                        onStartNewChat(c.phoneNumber, c.name, c.avatarBase64)
+                                        onStartNewChat(c.phoneNumber, c.name, c.avatarBase64, c.avatarVersion)
                                     }
                                 )
                             }
@@ -318,7 +313,7 @@ fun HomeScreen(
             },
             confirmButton = {
                 Button(colors = ButtonDefaults.buttonColors(containerColor = p.accent), onClick = {
-                    onStartNewChat(phone, name.ifBlank { null }, null)
+                    onStartNewChat(phone, name.ifBlank { null }, null, 0L)
                     showManualNumberDialog = false
                 }) { Text("Chat", color = p.accentText) }
             },
@@ -365,23 +360,11 @@ fun HomeScreen(
                         value = caption,
                         onValueChange = { caption = it },
                         placeholder = { Text("Type a status...", color = Color.White.copy(alpha = 0.7f)) },
-                        colors = OutlinedTextFieldDefaults.colors(
-                            focusedTextColor = Color.White,
-                            unfocusedTextColor = Color.White,
-                            focusedBorderColor = Color.White,
-                            unfocusedBorderColor = Color.White.copy(alpha = 0.5f)
-                        )
+                        colors = OutlinedTextFieldDefaults.colors(focusedTextColor = Color.White, unfocusedTextColor = Color.White, focusedBorderColor = Color.White, unfocusedBorderColor = Color.White.copy(alpha = 0.5f))
                     )
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         bgPalette.forEach { hex ->
-                            Box(
-                                modifier = Modifier
-                                    .size(28.dp)
-                                    .clip(CircleShape)
-                                    .background(Color(hex))
-                                    .border(if (selectedBg == hex) 2.5.dp else 1.dp, Color.White, CircleShape)
-                                    .clickable { selectedBg = hex }
-                            )
+                            Box(Modifier.size(28.dp).clip(CircleShape).background(Color(hex)).border(if (selectedBg == hex) 2.5.dp else 1.dp, Color.White, CircleShape).clickable { selectedBg = hex })
                         }
                     }
                     OutlinedButton(onClick = { imgPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }) {
@@ -392,10 +375,7 @@ fun HomeScreen(
                 }
             },
             confirmButton = {
-                Button(
-                    colors = ButtonDefaults.buttonColors(containerColor = p.accent),
-                    onClick = { onPostStatus(caption, selectedBg, pickedImg); showStatusComposer = false }
-                ) { Text("Post", color = p.accentText) }
+                Button(colors = ButtonDefaults.buttonColors(containerColor = p.accent), onClick = { onPostStatus(caption, selectedBg, pickedImg); showStatusComposer = false }) { Text("Post", color = p.accentText) }
             },
             dismissButton = { TextButton(onClick = { showStatusComposer = false }) { Text("Cancel", color = Color.White) } }
         )
@@ -403,34 +383,16 @@ fun HomeScreen(
 
     viewingStatus?.let { st ->
         val bmp = remember(st.imageBase64) { MediaHelper.decodeBase64ToImage(st.imageBase64) }
-        val avatarBmp = remember(st.ownerAvatarBase64) { MediaHelper.decodeBase64ToImage(st.ownerAvatarBase64) }
         val time = remember(st.timestamp) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(st.timestamp)) }
         Dialog(onDismissRequest = { viewingStatus = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-            Box(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .background(if (bmp != null) Color.Black else Color(st.bgColorHex))
-                    .clickable { viewingStatus = null }
-            ) {
-                if (bmp != null) {
-                    Image(bmp, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
-                }
+            Box(modifier = Modifier.fillMaxSize().background(if (bmp != null) Color.Black else Color(st.bgColorHex)).clickable { viewingStatus = null }) {
+                if (bmp != null) Image(bmp, null, contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
                 Column(modifier = Modifier.fillMaxWidth().padding(top = 18.dp, start = 14.dp, end = 14.dp)) {
-                    LinearProgressIndicator(
-                        progress = { 1f },
-                        color = Color.White,
-                        trackColor = Color.White.copy(alpha = 0.3f),
-                        modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp))
-                    )
+                    LinearProgressIndicator(progress = { 1f }, color = Color.White, trackColor = Color.White.copy(alpha = 0.3f), modifier = Modifier.fillMaxWidth().height(3.dp).clip(RoundedCornerShape(2.dp)))
                     Spacer(Modifier.height(12.dp))
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { viewingStatus = null }) {
-                            Icon(Icons.Default.Close, "Close", tint = Color.White)
-                        }
-                        Box(Modifier.size(38.dp).clip(CircleShape).background(Color(0xFF1F2C34)), Alignment.Center) {
-                            if (avatarBmp != null) Image(avatarBmp, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                            else Icon(Icons.Default.Person, null, tint = Color.White)
-                        }
+                        IconButton(onClick = { viewingStatus = null }) { Icon(Icons.Default.Close, "Close", tint = Color.White) }
+                        AvatarImage(avatarUrl = null, avatarBase64 = st.ownerAvatarBase64, size = 38.dp)
                         Spacer(Modifier.width(10.dp))
                         Column {
                             Text(st.ownerName, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
@@ -438,23 +400,12 @@ fun HomeScreen(
                         }
                     }
                 }
-
                 if (st.caption.isNotBlank()) {
                     Box(
-                        modifier = Modifier
-                            .align(if (bmp != null) Alignment.BottomCenter else Alignment.Center)
-                            .fillMaxWidth()
-                            .background(if (bmp != null) Color.Black.copy(alpha = 0.55f) else Color.Transparent)
-                            .padding(24.dp),
+                        modifier = Modifier.align(if (bmp != null) Alignment.BottomCenter else Alignment.Center).fillMaxWidth().background(if (bmp != null) Color.Black.copy(alpha = 0.55f) else Color.Transparent).padding(24.dp),
                         contentAlignment = Alignment.Center
                     ) {
-                        Text(
-                            st.caption,
-                            color = Color.White,
-                            fontSize = if (bmp != null) 16.sp else 24.sp,
-                            textAlign = TextAlign.Center,
-                            fontWeight = if (bmp != null) FontWeight.Normal else FontWeight.Medium
-                        )
+                        Text(st.caption, color = Color.White, fontSize = if (bmp != null) 16.sp else 24.sp, textAlign = TextAlign.Center, fontWeight = if (bmp != null) FontWeight.Normal else FontWeight.Medium)
                     }
                 }
             }
@@ -462,8 +413,15 @@ fun HomeScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ChatsTab(chats: List<ChatEntity>, onlineUsers: Set<String>, onChatClick: (String) -> Unit) {
+private fun ChatsTab(
+    chats: List<ChatEntity>,
+    onlineUsers: Set<String>,
+    getAvatarUrl: (String, Long) -> String?,
+    onChatClick: (String) -> Unit,
+    onChatLongClick: (ChatEntity) -> Unit
+) {
     val p = LocalWaPalette.current
     if (chats.isEmpty()) {
         Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -475,27 +433,20 @@ private fun ChatsTab(chats: List<ChatEntity>, onlineUsers: Set<String>, onChatCl
         items(chats, key = { it.chatId }) { chat ->
             val time = remember(chat.lastTimestamp) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(chat.lastTimestamp)) }
             val isOnline = !chat.isGroup && onlineUsers.contains(chat.chatId)
-            val avatarBmp = remember(chat.avatarBase64) { MediaHelper.decodeBase64ToImage(chat.avatarBase64) }
             Row(
-                modifier = Modifier.fillMaxWidth().clickable { onChatClick(chat.chatId) }.padding(horizontal = 16.dp, vertical = 12.dp),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .combinedClickable(onClick = { onChatClick(chat.chatId) }, onLongClick = { onChatLongClick(chat) })
+                    .padding(horizontal = 16.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Box {
-                    Box(
-                        modifier = Modifier.size(52.dp).clip(CircleShape).background(if (chat.isGroup) Color(0xFF005C4B) else p.surfaceVariant),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (avatarBmp != null) {
-                            Image(avatarBmp, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                        } else {
-                            Icon(
-                                if (chat.isGroup) Icons.Default.Groups else Icons.Default.Person,
-                                null,
-                                tint = if (chat.isGroup) Color.White else p.textSecondary,
-                                modifier = Modifier.size(28.dp)
-                            )
-                        }
-                    }
+                    AvatarImage(
+                        avatarUrl = if (chat.isGroup) null else getAvatarUrl(chat.chatId, chat.avatarVersion),
+                        avatarBase64 = chat.avatarBase64,
+                        isGroup = chat.isGroup,
+                        size = 52.dp
+                    )
                     if (isOnline) {
                         Box(Modifier.size(13.dp).clip(CircleShape).background(p.accent).border(2.dp, p.bg, CircleShape).align(Alignment.BottomEnd))
                     }
@@ -508,7 +459,7 @@ private fun ChatsTab(chats: List<ChatEntity>, onlineUsers: Set<String>, onChatCl
                     }
                     Spacer(Modifier.height(3.dp))
                     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                        Text(chat.lastMessage, maxLines = 1, overflow = TextOverflow.Ellipsis, color = p.textSecondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
+                        Text(chat.lastMessage.ifBlank { "No messages" }, maxLines = 1, overflow = TextOverflow.Ellipsis, color = p.textSecondary, fontSize = 14.sp, modifier = Modifier.weight(1f))
                         if (chat.unreadCount > 0) {
                             Box(Modifier.clip(CircleShape).background(p.accent).padding(horizontal = 7.dp, vertical = 2.dp)) {
                                 Text("${chat.unreadCount}", color = p.accentText, fontSize = 11.sp, fontWeight = FontWeight.Bold)
@@ -525,12 +476,12 @@ private fun ChatsTab(chats: List<ChatEntity>, onlineUsers: Set<String>, onChatCl
 private fun UpdatesTab(
     myProfile: UserProfile,
     statuses: List<StatusEntity>,
+    getAvatarUrl: (String, Long) -> String?,
     onAddStatus: () -> Unit,
     onRefresh: () -> Unit,
     onViewStatus: (StatusEntity) -> Unit
 ) {
     val p = LocalWaPalette.current
-    val myAvatar = remember(myProfile.avatarBase64) { MediaHelper.decodeBase64ToImage(myProfile.avatarBase64) }
     LazyColumn(modifier = Modifier.fillMaxSize().padding(16.dp)) {
         item {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -541,19 +492,9 @@ private fun UpdatesTab(
 
             LazyRow(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 item {
-                    Box(
-                        modifier = Modifier
-                            .size(width = 96.dp, height = 148.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(p.surface)
-                            .clickable { onAddStatus() }
-                            .padding(10.dp)
-                    ) {
+                    Box(modifier = Modifier.size(width = 96.dp, height = 148.dp).clip(RoundedCornerShape(16.dp)).background(p.surface).clickable { onAddStatus() }.padding(10.dp)) {
                         Box(Modifier.size(38.dp).align(Alignment.TopStart)) {
-                            Box(Modifier.size(36.dp).clip(CircleShape).background(p.surfaceVariant), Alignment.Center) {
-                                if (myAvatar != null) Image(myAvatar, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                                else Icon(Icons.Default.Person, null, tint = p.textPrimary)
-                            }
+                            AvatarImage(avatarUrl = getAvatarUrl(myProfile.phoneNumber, myProfile.avatarVersion), avatarBase64 = myProfile.avatarBase64, size = 36.dp)
                             Box(Modifier.size(18.dp).clip(CircleShape).background(p.accent).border(1.5.dp, p.surface, CircleShape).align(Alignment.BottomEnd), Alignment.Center) {
                                 Icon(Icons.Default.Add, null, tint = p.accentText, modifier = Modifier.size(12.dp))
                             }
@@ -561,55 +502,19 @@ private fun UpdatesTab(
                         Text("Add status", color = p.textPrimary, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, modifier = Modifier.align(Alignment.BottomStart))
                     }
                 }
-
                 items(statuses, key = { it.id }) { st ->
                     val img = remember(st.imageBase64) { MediaHelper.decodeBase64ToImage(st.imageBase64) }
-                    val av = remember(st.ownerAvatarBase64) { MediaHelper.decodeBase64ToImage(st.ownerAvatarBase64) }
-                    Box(
-                        modifier = Modifier
-                            .size(width = 96.dp, height = 148.dp)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(Color(st.bgColorHex))
-                            .clickable { onViewStatus(st) }
-                    ) {
+                    Box(modifier = Modifier.size(width = 96.dp, height = 148.dp).clip(RoundedCornerShape(16.dp)).background(Color(st.bgColorHex)).clickable { onViewStatus(st) }) {
                         if (img != null) {
                             Image(img, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
                             Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.25f)))
                         } else if (st.caption.isNotBlank()) {
-                            Text(
-                                st.caption,
-                                color = Color.White,
-                                fontSize = 11.sp,
-                                maxLines = 3,
-                                overflow = TextOverflow.Ellipsis,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.align(Alignment.Center).padding(8.dp)
-                            )
+                            Text(st.caption, color = Color.White, fontSize = 11.sp, maxLines = 3, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.Center).padding(8.dp))
                         }
-                        Box(
-                            Modifier
-                                .padding(8.dp)
-                                .size(36.dp)
-                                .clip(CircleShape)
-                                .border(2.dp, if (st.viewed) p.textSecondary else p.accent, CircleShape)
-                                .padding(2.dp)
-                                .clip(CircleShape)
-                                .background(p.surface)
-                                .align(Alignment.TopStart),
-                            Alignment.Center
-                        ) {
-                            if (av != null) Image(av, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                            else Icon(Icons.Default.Person, null, tint = p.textPrimary, modifier = Modifier.size(18.dp))
+                        Box(Modifier.padding(8.dp).size(36.dp).clip(CircleShape).border(2.dp, if (st.viewed) p.textSecondary else p.accent, CircleShape).padding(2.dp).align(Alignment.TopStart)) {
+                            AvatarImage(avatarUrl = null, avatarBase64 = st.ownerAvatarBase64, size = 32.dp)
                         }
-                        Text(
-                            st.ownerName,
-                            color = Color.White,
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.align(Alignment.BottomStart).padding(8.dp)
-                        )
+                        Text(st.ownerName, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.align(Alignment.BottomStart).padding(8.dp))
                     }
                 }
             }
@@ -617,20 +522,14 @@ private fun UpdatesTab(
             Text("Recent updates", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = p.textSecondary)
             Spacer(Modifier.height(8.dp))
         }
-
         if (statuses.isEmpty()) {
             item { Text("No status updates in the last 24 hours. Tap 'Add status' above!", color = p.textSecondary, fontSize = 13.5.sp) }
         } else {
             items(statuses, key = { "row_${it.id}" }) { st ->
                 val time = remember(st.timestamp) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(st.timestamp)) }
-                val av = remember(st.ownerAvatarBase64) { MediaHelper.decodeBase64ToImage(st.ownerAvatarBase64) }
                 Row(modifier = Modifier.fillMaxWidth().clickable { onViewStatus(st) }.padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Box(
-                        Modifier.size(50.dp).clip(CircleShape).border(2.5.dp, if (st.viewed) p.textSecondary else p.accent, CircleShape).padding(3.dp).clip(CircleShape).background(Color(st.bgColorHex)),
-                        Alignment.Center
-                    ) {
-                        if (av != null) Image(av, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                        else Icon(Icons.Default.AutoAwesome, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                    Box(Modifier.size(50.dp).clip(CircleShape).border(2.5.dp, if (st.viewed) p.textSecondary else p.accent, CircleShape).padding(3.dp)) {
+                        AvatarImage(avatarUrl = null, avatarBase64 = st.ownerAvatarBase64, size = 44.dp)
                     }
                     Spacer(Modifier.width(12.dp))
                     Column {
@@ -646,11 +545,7 @@ private fun UpdatesTab(
 @Composable
 private fun CommunitiesTab(onCreateGroup: () -> Unit) {
     val p = LocalWaPalette.current
-    Column(
-        modifier = Modifier.fillMaxSize().padding(28.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
+    Column(modifier = Modifier.fillMaxSize().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
         Icon(Icons.Default.Groups, null, tint = p.accent, modifier = Modifier.size(72.dp))
         Spacer(Modifier.height(14.dp))
         Text("Stay connected with a community", fontWeight = FontWeight.Bold, fontSize = 19.sp, color = p.textPrimary)
@@ -664,7 +559,7 @@ private fun CommunitiesTab(onCreateGroup: () -> Unit) {
 }
 
 @Composable
-private fun CallsTab(callLogs: List<CallLogEntity>, onCallClick: (CallLogEntity) -> Unit) {
+private fun CallsTab(callLogs: List<CallLogEntity>, getAvatarUrl: (String, Long) -> String?, onCallClick: (CallLogEntity) -> Unit) {
     val p = LocalWaPalette.current
     if (callLogs.isEmpty()) {
         Box(Modifier.fillMaxSize(), Alignment.Center) {
@@ -676,9 +571,7 @@ private fun CallsTab(callLogs: List<CallLogEntity>, onCallClick: (CallLogEntity)
         items(callLogs, key = { it.id }) { call ->
             val time = remember(call.timestamp) { SimpleDateFormat("dd MMM, HH:mm", Locale.getDefault()).format(Date(call.timestamp)) }
             Row(modifier = Modifier.fillMaxWidth().clickable { onCallClick(call) }.padding(vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(46.dp).clip(CircleShape).background(p.surface), Alignment.Center) {
-                    Icon(Icons.Default.Person, null, tint = p.textSecondary)
-                }
+                AvatarImage(avatarUrl = null, size = 46.dp)
                 Spacer(Modifier.width(12.dp))
                 Column(Modifier.weight(1f)) {
                     Text(call.title, fontWeight = FontWeight.SemiBold, color = if (call.isMissed) p.danger else p.textPrimary)
