@@ -14,6 +14,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.systemBarsPadding
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
@@ -48,6 +51,7 @@ class MainActivity : ComponentActivity() {
 
 @Composable
 fun GlobalChatApp(vm: MainViewModel) {
+    val p = LocalWaPalette.current
     val context = LocalContext.current
     val step by vm.onboardingStep.collectAsState()
     val profile by vm.profile.collectAsState()
@@ -55,6 +59,8 @@ fun GlobalChatApp(vm: MainViewModel) {
     val pendingEmail by vm.pendingEmail.collectAsState()
     val otpError by vm.otpError.collectAsState()
     val isAuthLoading by vm.isAuthLoading.collectAsState()
+    val uploadStatus by vm.uploadStatus.collectAsState()
+    val actionError by vm.actionError.collectAsState()
     val activeChatId by vm.activeChatId.collectAsState()
     val activeCall by vm.activeCall.collectAsState()
     val chats by vm.chats.collectAsState()
@@ -65,9 +71,16 @@ fun GlobalChatApp(vm: MainViewModel) {
     val phoneContacts by vm.phoneContacts.collectAsState()
     val statuses by vm.statuses.collectAsState()
     val callLogs by vm.callLogs.collectAsState()
+    val chatInfoMembers by vm.chatInfoMembers.collectAsState()
+    val memberProfiles by vm.memberProfiles.collectAsState()
 
     var showSettings by remember { mutableStateOf(false) }
+    var showChatInfo by remember { mutableStateOf(false) }
     var pendingCallAction by remember { mutableStateOf<(() -> Unit)?>(null) }
+
+    LaunchedEffect(activeChatId) {
+        if (activeChatId == null) showChatInfo = false
+    }
 
     val notifPermLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
@@ -126,6 +139,7 @@ fun GlobalChatApp(vm: MainViewModel) {
                 ActiveCallScreen(
                     call = call,
                     eglContext = vm.rtcManager.eglBase.eglBaseContext,
+                    getAvatarUrl = vm::getAvatarUrl,
                     onAttachRenderers = vm::attachCallRenderers,
                     onDetachRenderers = vm::detachCallRenderers,
                     onAccept = { runWithCallPermissions(call.isVideo) { vm.acceptIncomingCall() } },
@@ -134,37 +148,68 @@ fun GlobalChatApp(vm: MainViewModel) {
                     onEndCall = { vm.endCall() }
                 )
             } else if (showSettings) {
-                BackHandler { showSettings = false }
+                BackHandler { vm.clearUploadStatus(); showSettings = false }
                 SettingsScreen(
                     profile = profile,
+                    uploadStatus = uploadStatus,
+                    getAvatarUrl = vm::getAvatarUrl,
+                    onClearUploadStatus = vm::clearUploadStatus,
                     onSave = vm::updateProfileAndServer,
-                    onBack = { showSettings = false },
-                    onLogOut = { showSettings = false; vm.logOut() }
+                    onBack = { vm.clearUploadStatus(); showSettings = false },
+                    onLogOut = { vm.clearUploadStatus(); showSettings = false; vm.logOut() }
                 )
             } else if (activeChatId != null) {
-                BackHandler { vm.closeChat() }
                 val currentChat = chats.find { it.chatId == activeChatId }
                 if (currentChat != null) {
-                    ChatScreen(
-                        chat = currentChat,
-                        myUserId = profile.phoneNumber,
-                        myAvatarBase64 = profile.avatarBase64,
-                        isPartnerOnline = onlineUsers.contains(currentChat.chatId),
-                        isPartnerTyping = typingUsers.any { currentChat.memberIdsCsv.contains(it) },
-                        messages = messages,
-                        onBack = vm::closeChat,
-                        onSendText = vm::sendTextMessage,
-                        onSendImage = vm::sendImageMessage,
-                        onSendVoice = vm::sendVoiceMessage,
-                        onTypingChanged = vm::sendTyping,
-                        onReact = vm::sendReaction,
-                        onDelete = vm::deleteMessageForEveryone,
-                        onStartCall = { isVideo ->
-                            runWithCallPermissions(isVideo) {
-                                vm.startCall(currentChat.chatId, currentChat.title, isVideo)
+                    if (showChatInfo) {
+                        BackHandler { showChatInfo = false }
+                        ChatInfoScreen(
+                            chat = currentChat,
+                            members = chatInfoMembers,
+                            getAvatarUrl = vm::getAvatarUrl,
+                            onBack = { showChatInfo = false },
+                            onStartCall = { isVideo ->
+                                runWithCallPermissions(isVideo) {
+                                    vm.startCall(currentChat.chatId, currentChat.title, isVideo)
+                                }
+                            },
+                            onClearChat = { vm.clearChat(currentChat.chatId) },
+                            onDeleteChat = { showChatInfo = false; vm.deleteEntireChat(currentChat.chatId) }
+                        )
+                    } else {
+                        BackHandler { vm.closeChat() }
+                        ChatScreen(
+                            chat = currentChat,
+                            myUserId = profile.phoneNumber,
+                            myAvatarBase64 = profile.avatarBase64,
+                            myAvatarVersion = profile.avatarVersion,
+                            isPartnerOnline = onlineUsers.contains(currentChat.chatId),
+                            isPartnerTyping = typingUsers.any { currentChat.memberIdsCsv.contains(it) },
+                            messages = messages,
+                            memberProfiles = memberProfiles,
+                            getAvatarUrl = vm::getAvatarUrl,
+                            canDeleteForEveryone = { selected -> vm.canDeleteForEveryone(selected, currentChat) },
+                            onBack = vm::closeChat,
+                            onOpenInfo = {
+                                vm.loadChatInfo(currentChat.chatId)
+                                showChatInfo = true
+                            },
+                            onSendText = vm::sendTextMessage,
+                            onSendImage = vm::sendImageMessage,
+                            onSendVoice = vm::sendVoiceMessage,
+                            onTypingChanged = vm::sendTyping,
+                            onReact = vm::sendReaction,
+                            onDeleteForMe = vm::deleteMessagesForMe,
+                            onDeleteForEveryone = vm::deleteMessagesForEveryone,
+                            onClearChat = { vm.clearChat(currentChat.chatId) },
+                            onDeleteChat = { vm.deleteEntireChat(currentChat.chatId) },
+                            onStartCall = { isVideo ->
+                                runWithCallPermissions(isVideo) {
+                                    vm.startCall(currentChat.chatId, currentChat.title, isVideo)
+                                }
                             }
-                        }
-                    )
+                        )
+                    }
                 }
             } else {
                 HomeScreen(
@@ -175,9 +220,11 @@ fun GlobalChatApp(vm: MainViewModel) {
                     phoneContacts = phoneContacts,
                     statuses = statuses,
                     callLogs = callLogs,
+                    getAvatarUrl = vm::getAvatarUrl,
                     onRequestLoadContacts = vm::loadDeviceContacts,
                     onRefreshStatuses = vm::refreshStatuses,
                     onChatClick = vm::openChat,
+                    onDeleteChat = vm::deleteEntireChat,
                     onStartNewChat = vm::startChat,
                     onCreateGroup = vm::createGroup,
                     onPostStatus = vm::postStatus,
@@ -187,10 +234,22 @@ fun GlobalChatApp(vm: MainViewModel) {
                             vm.startCall(partnerId, title, isVideo)
                         }
                     },
-                    onOpenSettings = { showSettings = true },
+                    onOpenSettings = { vm.clearUploadStatus(); showSettings = true },
                     onLogOut = vm::logOut
                 )
             }
         }
+    }
+
+    actionError?.let { err ->
+        AlertDialog(
+            onDismissRequest = vm::clearActionError,
+            containerColor = p.surface,
+            title = { Text("Action not allowed", color = p.textPrimary) },
+            text = { Text(err, color = p.textSecondary) },
+            confirmButton = {
+                TextButton(onClick = vm::clearActionError) { Text("OK", color = p.accent) }
+            }
+        )
     }
 }
