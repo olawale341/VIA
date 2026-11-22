@@ -58,6 +58,10 @@ dependencies {
     implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
     implementation("com.google.firebase:firebase-messaging")
 
-    // Real-Time Voice & Video Calls (WebRTC)
+    // Live Voice & Video Calls (WebRTC)
     implementation("io.getstream:stream-webrtc-android:1.3.10")
+
+    // Fast Image Loading & Disk/Memory Caching (Coil 3)
+    implementation("io.coil-kt.coil3:coil-compose:3.4.0")
+    implementation("io.coil-kt.coil3:coil-network-okhttp:3.4.0")
 }
