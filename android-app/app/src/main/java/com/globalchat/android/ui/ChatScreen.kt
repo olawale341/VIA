@@ -6,16 +6,19 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
@@ -25,14 +28,20 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.core.content.ContextCompat
 import com.globalchat.android.data.local.ChatEntity
 import com.globalchat.android.data.local.MessageEntity
@@ -40,12 +49,14 @@ import com.globalchat.android.model.MessageStatus
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
+import kotlin.math.abs
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     chat: ChatEntity,
     myUserId: String,
+    myAvatarBase64: String?,
     isPartnerOnline: Boolean,
     isPartnerTyping: Boolean,
     messages: List<MessageEntity>,
@@ -58,14 +69,18 @@ fun ChatScreen(
     onDelete: (String) -> Unit,
     onStartCall: (Boolean) -> Unit
 ) {
+    val p = LocalWaPalette.current
     val context = LocalContext.current
     var inputText by remember { mutableStateOf("") }
     var replyingTo by remember { mutableStateOf<MessageEntity?>(null) }
     var selectedMsg by remember { mutableStateOf<MessageEntity?>(null) }
+    var viewingPhotoMsg by remember { mutableStateOf<MessageEntity?>(null) }
     var isRecording by remember { mutableStateOf(false) }
     var playingMsgId by remember { mutableStateOf<String?>(null) }
     var showEmojiRow by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+
+    val partnerAvatar = remember(chat.avatarBase64) { MediaHelper.decodeBase64ToImage(chat.avatarBase64) }
 
     val galleryPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) onSendImage(uri)
@@ -90,47 +105,52 @@ fun ChatScreen(
     }
 
     Scaffold(
+        containerColor = p.chatBg,
         topBar = {
             TopAppBar(
                 navigationIcon = {
                     IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = Color(0xFF111B21))
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = p.textPrimary)
                     }
                 },
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(38.dp).clip(CircleShape).background(Color(0xFF008069)), Alignment.Center) {
-                            Icon(if (chat.isGroup) Icons.Default.Groups else Icons.Default.Person, null, tint = Color.White, modifier = Modifier.size(20.dp))
+                        Box(Modifier.size(38.dp).clip(CircleShape).background(p.surfaceVariant), Alignment.Center) {
+                            if (partnerAvatar != null) {
+                                Image(partnerAvatar, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                            } else {
+                                Icon(if (chat.isGroup) Icons.Default.Groups else Icons.Default.Person, null, tint = p.textPrimary, modifier = Modifier.size(20.dp))
+                            }
                         }
                         Spacer(Modifier.width(10.dp))
                         Column {
-                            Text(chat.title, fontSize = 16.sp, fontWeight = FontWeight.SemiBold, color = Color(0xFF111B21))
+                            Text(chat.title, fontSize = 16.5.sp, fontWeight = FontWeight.SemiBold, color = p.textPrimary)
                             val sub = when {
                                 isPartnerTyping -> "typing..."
                                 chat.isGroup -> "${chat.memberIdsCsv.split(",").size} participants"
                                 isPartnerOnline -> "online"
-                                else -> "tap here for contact info"
+                                else -> "tap here for info"
                             }
-                            Text(sub, fontSize = 12.sp, color = if (isPartnerTyping || isPartnerOnline) Color(0xFF1DAB61) else Color(0xFF667781))
+                            Text(sub, fontSize = 12.sp, color = if (isPartnerTyping || isPartnerOnline) p.accent else p.textSecondary)
                         }
                     }
                 },
                 actions = {
                     IconButton(onClick = { onStartCall(true) }) {
-                        Icon(Icons.Default.Videocam, "Video Call", tint = Color(0xFF111B21))
+                        Icon(Icons.Default.Videocam, "Video Call", tint = p.textPrimary)
                     }
                     IconButton(onClick = { onStartCall(false) }) {
-                        Icon(Icons.Default.Call, "Voice Call", tint = Color(0xFF111B21))
+                        Icon(Icons.Default.Call, "Voice Call", tint = p.textPrimary)
                     }
                 },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = p.topBar)
             )
         },
         bottomBar = {
-            Column(modifier = Modifier.background(Color(0xFFEFEAE2))) {
+            Column(modifier = Modifier.background(p.chatBg).padding(bottom = 6.dp)) {
                 if (showEmojiRow) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().background(Color.White).padding(vertical = 6.dp),
+                        modifier = Modifier.fillMaxWidth().background(p.surface).padding(vertical = 6.dp),
                         horizontalArrangement = Arrangement.SpaceEvenly
                     ) {
                         listOf("😀", "😂", "❤️", "👍", "🙏", "🔥", "🎉", "😢").forEach { e ->
@@ -140,65 +160,95 @@ fun ChatScreen(
                 }
                 replyingTo?.let { reply ->
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(horizontal = 10.dp, vertical = 4.dp).background(Color.White, RoundedCornerShape(10.dp)).padding(8.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 10.dp, vertical = 4.dp)
+                            .background(p.surface, RoundedCornerShape(10.dp))
+                            .padding(8.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Box(Modifier.width(4.dp).height(30.dp).background(Color(0xFF1DAB61)))
+                        Box(Modifier.width(4.dp).height(30.dp).background(p.accent))
                         Spacer(Modifier.width(8.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(reply.senderId, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF008069))
-                            Text(reply.content, maxLines = 1, fontSize = 13.sp, color = Color.Gray)
+                            Text(
+                                if (reply.senderId == myUserId) "You" else reply.senderId,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = p.accent
+                            )
+                            Text(reply.content, maxLines = 1, fontSize = 13.sp, color = p.textSecondary)
                         }
-                        IconButton(onClick = { replyingTo = null }) { Icon(Icons.Default.Close, null, Modifier.size(18.dp)) }
+                        IconButton(onClick = { replyingTo = null }) {
+                            Icon(Icons.Default.Close, null, tint = p.textSecondary, modifier = Modifier.size(18.dp))
+                        }
                     }
                 }
 
                 if (isRecording) {
                     Row(
-                        modifier = Modifier.fillMaxWidth().padding(8.dp).background(Color.White, RoundedCornerShape(28.dp)).padding(horizontal = 14.dp, vertical = 6.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 8.dp, vertical = 4.dp)
+                            .background(p.surface, RoundedCornerShape(28.dp))
+                            .padding(horizontal = 14.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Icon(Icons.Default.Mic, null, tint = Color.Red)
+                        Icon(Icons.Default.Mic, null, tint = p.danger)
                         Spacer(Modifier.width(8.dp))
-                        Text("Recording voice note...", modifier = Modifier.weight(1f), color = Color.Red, fontWeight = FontWeight.Medium)
+                        Text("Recording voice note...", modifier = Modifier.weight(1f), color = p.danger, fontWeight = FontWeight.Medium)
                         IconButton(onClick = {
                             MediaHelper.stopAndEncodeVoiceNote()
                             isRecording = false
-                        }) { Icon(Icons.Default.Delete, "Cancel", tint = Color.Gray) }
+                        }) { Icon(Icons.Default.Delete, "Cancel", tint = p.textSecondary) }
                         IconButton(
                             onClick = {
                                 val res = MediaHelper.stopAndEncodeVoiceNote()
                                 isRecording = false
                                 if (res != null) onSendVoice(res.first, res.second)
                             },
-                            modifier = Modifier.size(40.dp).background(Color(0xFF1DAB61), CircleShape)
-                        ) { Icon(Icons.AutoMirrored.Filled.Send, "Send Voice", tint = Color.White) }
+                            modifier = Modifier.size(40.dp).background(p.accent, CircleShape)
+                        ) { Icon(Icons.AutoMirrored.Filled.Send, "Send Voice", tint = p.accentText) }
                     }
                 } else {
-                    Row(modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
                         Row(
-                            modifier = Modifier.weight(1f).background(Color.White, RoundedCornerShape(26.dp)).padding(horizontal = 6.dp),
+                            modifier = Modifier
+                                .weight(1f)
+                                .heightIn(min = 48.dp)
+                                .background(p.inBubble, RoundedCornerShape(26.dp))
+                                .padding(horizontal = 4.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             IconButton(onClick = { showEmojiRow = !showEmojiRow }) {
-                                Icon(Icons.Default.EmojiEmotions, "Emoji", tint = Color(0xFF667781))
+                                Icon(Icons.Default.EmojiEmotions, "Emoji", tint = p.textSecondary)
                             }
-                            TextField(
+                            BasicTextField(
                                 value = inputText,
                                 onValueChange = { inputText = it },
-                                placeholder = { Text("Message", color = Color(0xFF667781)) },
-                                colors = TextFieldDefaults.colors(
-                                    focusedContainerColor = Color.Transparent,
-                                    unfocusedContainerColor = Color.Transparent,
-                                    focusedIndicatorColor = Color.Transparent,
-                                    unfocusedIndicatorColor = Color.Transparent
-                                ),
+                                cursorBrush = SolidColor(p.accent),
+                                textStyle = TextStyle(color = p.textPrimary, fontSize = 16.sp),
+                                decorationBox = { inner ->
+                                    Box(modifier = Modifier.padding(vertical = 10.dp)) {
+                                        if (inputText.isEmpty()) Text("Message", color = p.textSecondary, fontSize = 16.sp)
+                                        inner()
+                                    }
+                                },
                                 modifier = Modifier.weight(1f)
                             )
                             IconButton(onClick = {
                                 galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                             }) {
-                                Icon(Icons.Default.AttachFile, "Attach Photo", tint = Color(0xFF667781))
+                                Icon(Icons.Default.AttachFile, "Attach", tint = p.textSecondary)
+                            }
+                            if (inputText.isEmpty()) {
+                                IconButton(onClick = {
+                                    galleryPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                                }) {
+                                    Icon(Icons.Default.PhotoCamera, "Photo", tint = p.textSecondary)
+                                }
                             }
                         }
                         Spacer(Modifier.width(6.dp))
@@ -214,12 +264,12 @@ fun ChatScreen(
                                     else micPermLauncher.launch(Manifest.permission.RECORD_AUDIO)
                                 }
                             },
-                            modifier = Modifier.size(48.dp).background(Color(0xFF1DAB61), CircleShape)
+                            modifier = Modifier.size(48.dp).background(p.accent, CircleShape)
                         ) {
                             Icon(
                                 if (inputText.isNotBlank()) Icons.AutoMirrored.Filled.Send else Icons.Default.Mic,
                                 contentDescription = "Send or Voice",
-                                tint = Color.White
+                                tint = p.accentText
                             )
                         }
                     }
@@ -227,91 +277,201 @@ fun ChatScreen(
             }
         }
     ) { padding ->
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize().background(Color(0xFFEFEAE2)).padding(padding).padding(horizontal = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
-            contentPadding = PaddingValues(vertical = 10.dp)
-        ) {
-            item {
-                Box(modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp), contentAlignment = Alignment.Center) {
-                    Surface(color = Color(0xFFFFF3C4), shape = RoundedCornerShape(10.dp)) {
-                        Text(
-                            text = if (chat.isGroup) "🔒 Group chat on GlobalChat"
-                            else "🔒 Messages and calls are end-to-end encrypted. No one outside of this chat, not even GlobalChat, can read or listen to them.",
-                            fontSize = 11.sp,
-                            color = Color(0xFF54421A),
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp)
-                        )
+        Box(modifier = Modifier.fillMaxSize().background(p.chatBg).padding(padding)) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val step = 110.dp.toPx()
+                var y = 30f
+                var row = 0
+                while (y < size.height) {
+                    var x = if (row % 2 == 0) 30f else 85f
+                    while (x < size.width) {
+                        drawCircle(p.doodleColor, radius = 16.dp.toPx(), center = Offset(x, y), style = Stroke(2f))
+                        drawCircle(p.doodleColor, radius = 6.dp.toPx(), center = Offset(x + 42.dp.toPx(), y + 28.dp.toPx()), style = Stroke(2f))
+                        x += step
                     }
+                    y += step
+                    row++
                 }
             }
 
-            items(messages, key = { it.id }) { msg ->
-                val isMine = msg.senderId == myUserId
-                val time = remember(msg.timestamp) { SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(msg.timestamp)) }
-                val imgBitmap = remember(msg.mediaBase64, msg.mediaType) {
-                    if (msg.mediaType == "IMAGE") MediaHelper.decodeBase64ToImage(msg.mediaBase64) else null
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(5.dp),
+                contentPadding = PaddingValues(vertical = 10.dp)
+            ) {
+                item {
+                    Box(modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp), contentAlignment = Alignment.Center) {
+                        Surface(color = p.e2eeBg, shape = RoundedCornerShape(10.dp)) {
+                            Text(
+                                text = if (chat.isGroup) "🔒 Group chat on GlobalChat"
+                                else "🔒 Messages and calls are end-to-end encrypted. No one outside of this chat, not even GlobalChat, can read or listen to them.",
+                                fontSize = 11.5.sp,
+                                color = p.e2eeText,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                            )
+                        }
+                    }
                 }
 
-                Box(Modifier.fillMaxWidth(), contentAlignment = if (isMine) Alignment.CenterEnd else Alignment.CenterStart) {
-                    Surface(
-                        color = if (isMine) Color(0xFFE7FFDB) else Color.White,
-                        shape = RoundedCornerShape(12.dp),
-                        shadowElevation = 1.dp,
-                        modifier = Modifier.widthIn(max = 290.dp).combinedClickable(onClick = {}, onLongClick = { selectedMsg = msg })
-                    ) {
-                        Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
-                            if (chat.isGroup && !isMine) {
-                                Text(msg.senderId, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF008069))
+                itemsIndexed(messages, key = { _, m -> m.id }) { index, msg ->
+                    val currentDateLabel = remember(msg.timestamp) { formatDatePill(msg.timestamp) }
+                    val prevDateLabel = remember(index, messages.size) {
+                        if (index > 0) formatDatePill(messages[index - 1].timestamp) else ""
+                    }
+                    if (index == 0 || currentDateLabel != prevDateLabel) {
+                        Box(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
+                            Surface(color = p.datePill, shape = RoundedCornerShape(10.dp)) {
+                                Text(
+                                    currentDateLabel,
+                                    color = p.textSecondary,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                )
                             }
-                            if (msg.replyToText != null) {
-                                Box(Modifier.fillMaxWidth().padding(bottom = 4.dp).background(Color.Black.copy(alpha = 0.05f), RoundedCornerShape(6.dp)).padding(6.dp)) {
-                                    Text(msg.replyToText, fontSize = 12.sp, color = Color.DarkGray, maxLines = 2)
+                        }
+                    }
+
+                    val isMine = msg.senderId == myUserId
+                    val time = remember(msg.timestamp) { SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(msg.timestamp)) }
+                    val imgBitmap = remember(msg.mediaBase64, msg.mediaType) {
+                        if (msg.mediaType == "IMAGE") MediaHelper.decodeBase64ToImage(msg.mediaBase64) else null
+                    }
+                    val voiceAvatar = remember(isMine, myAvatarBase64, chat.avatarBase64) {
+                        MediaHelper.decodeBase64ToImage(if (isMine) myAvatarBase64 else chat.avatarBase64)
+                    }
+
+                    Box(Modifier.fillMaxWidth(), contentAlignment = if (isMine) Alignment.CenterEnd else Alignment.CenterStart) {
+                        Surface(
+                            color = if (isMine) p.outBubble else p.inBubble,
+                            shape = RoundedCornerShape(
+                                topStart = if (isMine) 14.dp else 4.dp,
+                                topEnd = if (isMine) 4.dp else 14.dp,
+                                bottomStart = 14.dp,
+                                bottomEnd = 14.dp
+                            ),
+                            shadowElevation = if (p.isDark) 0.dp else 1.dp,
+                            modifier = Modifier
+                                .widthIn(min = 90.dp, max = 300.dp)
+                                .combinedClickable(onClick = {}, onLongClick = { selectedMsg = msg })
+                        ) {
+                            Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
+                                if (chat.isGroup && !isMine) {
+                                    Text(msg.senderId, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = p.accent)
                                 }
-                            }
-                            when {
-                                msg.isDeleted -> Text(msg.content, fontSize = 14.sp, fontStyle = FontStyle.Italic, color = Color.Gray)
-                                msg.mediaType == "IMAGE" && imgBitmap != null -> {
-                                    Image(imgBitmap, "Photo", contentScale = ContentScale.Crop, modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp).clip(RoundedCornerShape(8.dp)))
-                                }
-                                msg.mediaType == "VOICE" && msg.mediaBase64 != null -> {
-                                    val isPlaying = playingMsgId == msg.id
-                                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 4.dp)) {
-                                        IconButton(
-                                            onClick = {
-                                                if (isPlaying) {
-                                                    MediaHelper.stopPlayback()
-                                                    playingMsgId = null
-                                                } else {
-                                                    playingMsgId = msg.id
-                                                    MediaHelper.playVoiceBase64(context, msg.mediaBase64) { playingMsgId = null }
-                                                }
-                                            },
-                                            modifier = Modifier.size(36.dp).background(Color(0xFF1DAB61), CircleShape)
-                                        ) {
-                                            Icon(if (isPlaying) Icons.Default.Stop else Icons.Default.PlayArrow, null, tint = Color.White)
-                                        }
+                                if (msg.replyToText != null) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .padding(bottom = 5.dp)
+                                            .background(Color.Black.copy(alpha = if (p.isDark) 0.22f else 0.06f), RoundedCornerShape(8.dp))
+                                            .padding(7.dp)
+                                    ) {
+                                        Box(Modifier.width(3.dp).height(28.dp).background(p.accent))
                                         Spacer(Modifier.width(8.dp))
-                                        Text("Voice note • ${msg.durationSec}s", fontSize = 13.sp, color = Color(0xFF111B21))
+                                        Text(msg.replyToText, fontSize = 12.5.sp, color = p.textSecondary, maxLines = 2)
                                     }
                                 }
-                                else -> Text(msg.content, fontSize = 15.sp, color = Color(0xFF111B21))
-                            }
-                            Row(modifier = Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
-                                if (msg.reaction != null) {
-                                    Text(msg.reaction, fontSize = 13.sp)
-                                    Spacer(Modifier.width(6.dp))
+                                when {
+                                    msg.isDeleted -> Text(msg.content, fontSize = 14.sp, fontStyle = FontStyle.Italic, color = p.textSecondary)
+                                    msg.mediaType == "IMAGE" && imgBitmap != null -> {
+                                        Image(
+                                            bitmap = imgBitmap,
+                                            contentDescription = "Photo",
+                                            contentScale = ContentScale.Crop,
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .heightIn(max = 240.dp)
+                                                .clip(RoundedCornerShape(8.dp))
+                                                .clickable { viewingPhotoMsg = msg }
+                                        )
+                                        Spacer(Modifier.height(4.dp))
+                                    }
+                                    msg.mediaType == "VOICE" && msg.mediaBase64 != null -> {
+                                        val isPlaying = playingMsgId == msg.id
+                                        val bars = remember(msg.id) {
+                                            val seed = abs(msg.id.hashCode())
+                                            List(22) { idx -> 6 + ((seed + idx * 17) % 18) }
+                                        }
+                                        Row(
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            modifier = Modifier.width(245.dp).padding(vertical = 4.dp)
+                                        ) {
+                                            Box(modifier = Modifier.size(44.dp)) {
+                                                Box(
+                                                    Modifier.size(42.dp).clip(CircleShape).background(p.surfaceVariant),
+                                                    Alignment.Center
+                                                ) {
+                                                    if (voiceAvatar != null) Image(voiceAvatar, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                                                    else Icon(Icons.Default.Person, null, tint = p.textPrimary)
+                                                }
+                                                Icon(
+                                                    Icons.Default.Mic,
+                                                    null,
+                                                    tint = p.tickBlue,
+                                                    modifier = Modifier.size(16.dp).align(Alignment.BottomEnd)
+                                                )
+                                            }
+                                            Spacer(Modifier.width(6.dp))
+                                            IconButton(
+                                                onClick = {
+                                                    if (isPlaying) {
+                                                        MediaHelper.stopPlayback()
+                                                        playingMsgId = null
+                                                    } else {
+                                                        playingMsgId = msg.id
+                                                        MediaHelper.playVoiceBase64(context, msg.mediaBase64) { playingMsgId = null }
+                                                    }
+                                                },
+                                                modifier = Modifier.size(34.dp)
+                                            ) {
+                                                Icon(
+                                                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                                    null,
+                                                    tint = p.textSecondary,
+                                                    modifier = Modifier.size(30.dp)
+                                                )
+                                            }
+                                            Column(modifier = Modifier.weight(1f)) {
+                                                Row(
+                                                    verticalAlignment = Alignment.CenterVertically,
+                                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                                    modifier = Modifier.height(26.dp)
+                                                ) {
+                                                    Box(Modifier.size(9.dp).clip(CircleShape).background(p.tickBlue))
+                                                    bars.forEach { h ->
+                                                        Box(
+                                                            Modifier
+                                                                .width(2.5.dp)
+                                                                .height(h.dp)
+                                                                .clip(RoundedCornerShape(2.dp))
+                                                                .background(if (isPlaying) p.tickBlue else p.textSecondary.copy(alpha = 0.7f))
+                                                        )
+                                                    }
+                                                }
+                                                Text("0:${msg.durationSec.toString().padStart(2, '0')}", fontSize = 11.sp, color = p.textSecondary)
+                                            }
+                                        }
+                                    }
+                                    else -> Text(msg.content, fontSize = 15.5.sp, color = p.textPrimary)
                                 }
-                                Text(time, fontSize = 11.sp, color = Color(0xFF667781))
-                                if (isMine && !msg.isDeleted) {
-                                    Spacer(Modifier.width(4.dp))
-                                    when (msg.status) {
-                                        MessageStatus.SENDING -> Icon(Icons.Default.Schedule, null, tint = Color.Gray, modifier = Modifier.size(13.dp))
-                                        MessageStatus.SENT -> Icon(Icons.Default.Done, null, tint = Color.Gray, modifier = Modifier.size(15.dp))
-                                        MessageStatus.DELIVERED -> Icon(Icons.Default.DoneAll, null, tint = Color.Gray, modifier = Modifier.size(15.dp))
-                                        MessageStatus.READ -> Icon(Icons.Default.DoneAll, null, tint = Color(0xFF34B7F1), modifier = Modifier.size(15.dp))
+
+                                Row(modifier = Modifier.align(Alignment.End), verticalAlignment = Alignment.CenterVertically) {
+                                    if (msg.reaction != null) {
+                                        Text(msg.reaction, fontSize = 13.sp)
+                                        Spacer(Modifier.width(6.dp))
+                                    }
+                                    Text(time, fontSize = 11.sp, color = p.tickGray)
+                                    if (isMine && !msg.isDeleted) {
+                                        Spacer(Modifier.width(4.dp))
+                                        when (msg.status) {
+                                            MessageStatus.SENDING -> Icon(Icons.Default.Schedule, null, tint = p.tickGray, modifier = Modifier.size(13.dp))
+                                            MessageStatus.SENT -> Icon(Icons.Default.Done, null, tint = p.tickGray, modifier = Modifier.size(15.dp))
+                                            MessageStatus.DELIVERED -> Icon(Icons.Default.DoneAll, null, tint = p.tickGray, modifier = Modifier.size(15.dp))
+                                            MessageStatus.READ -> Icon(Icons.Default.DoneAll, null, tint = p.tickBlue, modifier = Modifier.size(15.dp))
+                                        }
                                     }
                                 }
                             }
@@ -322,10 +482,35 @@ fun ChatScreen(
         }
     }
 
+    viewingPhotoMsg?.let { photoMsg ->
+        val fullBmp = remember(photoMsg.mediaBase64) { MediaHelper.decodeBase64ToImage(photoMsg.mediaBase64) }
+        val time = remember(photoMsg.timestamp) { SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()).format(Date(photoMsg.timestamp)) }
+        Dialog(onDismissRequest = { viewingPhotoMsg = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            Box(modifier = Modifier.fillMaxSize().background(Color.Black)) {
+                if (fullBmp != null) {
+                    Image(fullBmp, "Full Photo", contentScale = ContentScale.Fit, modifier = Modifier.fillMaxSize())
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth().background(Color.Black.copy(alpha = 0.55f)).padding(horizontal = 8.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    IconButton(onClick = { viewingPhotoMsg = null }) {
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Close", tint = Color.White)
+                    }
+                    Column {
+                        Text(if (photoMsg.senderId == myUserId) "You" else chat.title, color = Color.White, fontWeight = FontWeight.SemiBold, fontSize = 16.sp)
+                        Text(time, color = Color.White.copy(alpha = 0.75f), fontSize = 12.sp)
+                    }
+                }
+            }
+        }
+    }
+
     selectedMsg?.let { target ->
         AlertDialog(
             onDismissRequest = { selectedMsg = null },
-            title = { Text("Message Options") },
+            containerColor = p.surface,
+            title = { Text("Message Options", color = p.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -333,13 +518,25 @@ fun ChatScreen(
                             TextButton(onClick = { onReact(target.id, emoji); selectedMsg = null }) { Text(emoji, fontSize = 20.sp) }
                         }
                     }
-                    TextButton(onClick = { replyingTo = target; selectedMsg = null }) { Text("Reply") }
+                    TextButton(onClick = { replyingTo = target; selectedMsg = null }) { Text("Reply", color = p.textPrimary) }
                     if (target.senderId == myUserId && !target.isDeleted) {
-                        TextButton(onClick = { onDelete(target.id); selectedMsg = null }) { Text("Delete for everyone", color = Color.Red) }
+                        TextButton(onClick = { onDelete(target.id); selectedMsg = null }) { Text("Delete for everyone", color = p.danger) }
                     }
                 }
             },
-            confirmButton = { TextButton(onClick = { selectedMsg = null }) { Text("Close") } }
+            confirmButton = { TextButton(onClick = { selectedMsg = null }) { Text("Close", color = p.accent) } }
         )
+    }
+}
+
+private fun formatDatePill(timestamp: Long): String {
+    val msgCal = Calendar.getInstance().apply { timeInMillis = timestamp }
+    val today = Calendar.getInstance()
+    return if (msgCal.get(Calendar.YEAR) == today.get(Calendar.YEAR) &&
+        msgCal.get(Calendar.DAY_OF_YEAR) == today.get(Calendar.DAY_OF_YEAR)
+    ) {
+        "Today"
+    } else {
+        SimpleDateFormat("MMMM d, yyyy", Locale.getDefault()).format(Date(timestamp))
     }
 }
