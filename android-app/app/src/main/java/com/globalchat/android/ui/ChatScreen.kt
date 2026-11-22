@@ -3,6 +3,7 @@ package com.globalchat.android.ui
 import android.Manifest
 import android.content.pm.PackageManager
 import android.net.Uri
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -33,7 +34,9 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -46,6 +49,7 @@ import androidx.core.content.ContextCompat
 import com.globalchat.android.data.local.ChatEntity
 import com.globalchat.android.data.local.MessageEntity
 import com.globalchat.android.model.MessageStatus
+import com.globalchat.android.model.RegisteredUserDto
 import kotlinx.coroutines.delay
 import java.text.SimpleDateFormat
 import java.util.*
@@ -57,30 +61,53 @@ fun ChatScreen(
     chat: ChatEntity,
     myUserId: String,
     myAvatarBase64: String?,
+    myAvatarVersion: Long,
     isPartnerOnline: Boolean,
     isPartnerTyping: Boolean,
     messages: List<MessageEntity>,
+    memberProfiles: Map<String, RegisteredUserDto>,
+    getAvatarUrl: (String, Long) -> String?,
+    canDeleteForEveryone: (List<MessageEntity>) -> Boolean,
     onBack: () -> Unit,
+    onOpenInfo: () -> Unit,
     onSendText: (String, MessageEntity?) -> Unit,
     onSendImage: (Uri) -> Unit,
     onSendVoice: (String, Int) -> Unit,
     onTypingChanged: (Boolean) -> Unit,
     onReact: (String, String) -> Unit,
-    onDelete: (String) -> Unit,
+    onDeleteForMe: (List<String>) -> Unit,
+    onDeleteForEveryone: (List<String>) -> Unit,
+    onClearChat: () -> Unit,
+    onDeleteChat: () -> Unit,
     onStartCall: (Boolean) -> Unit
 ) {
     val p = LocalWaPalette.current
     val context = LocalContext.current
+    @Suppress("DEPRECATION")
+    val clipboard = LocalClipboardManager.current
+
     var inputText by remember { mutableStateOf("") }
     var replyingTo by remember { mutableStateOf<MessageEntity?>(null) }
-    var selectedMsg by remember { mutableStateOf<MessageEntity?>(null) }
+    var selectedIds by remember { mutableStateOf(setOf<String>()) }
+    var showDeleteDialog by remember { mutableStateOf(false) }
+    var showReactionDialogFor by remember { mutableStateOf<MessageEntity?>(null) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+    var showClearConfirm by remember { mutableStateOf(false) }
+    var showDeleteChatConfirm by remember { mutableStateOf(false) }
     var viewingPhotoMsg by remember { mutableStateOf<MessageEntity?>(null) }
     var isRecording by remember { mutableStateOf(false) }
     var playingMsgId by remember { mutableStateOf<String?>(null) }
     var showEmojiRow by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
-    val partnerAvatar = remember(chat.avatarBase64) { MediaHelper.decodeBase64ToImage(chat.avatarBase64) }
+    val isSelectionMode = selectedIds.isNotEmpty()
+    val selectedMessages = remember(selectedIds, messages) {
+        messages.filter { selectedIds.contains(it.id) }
+    }
+
+    BackHandler(enabled = isSelectionMode) {
+        selectedIds = emptySet()
+    }
 
     val galleryPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) onSendImage(uri)
@@ -107,44 +134,110 @@ fun ChatScreen(
     Scaffold(
         containerColor = p.chatBg,
         topBar = {
-            TopAppBar(
-                navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = p.textPrimary)
-                    }
-                },
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.size(38.dp).clip(CircleShape).background(p.surfaceVariant), Alignment.Center) {
-                            if (partnerAvatar != null) {
-                                Image(partnerAvatar, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                            } else {
-                                Icon(if (chat.isGroup) Icons.Default.Groups else Icons.Default.Person, null, tint = p.textPrimary, modifier = Modifier.size(20.dp))
+            if (isSelectionMode) {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = { selectedIds = emptySet() }) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Cancel Selection", tint = p.textPrimary)
+                        }
+                    },
+                    title = {
+                        Text("${selectedMessages.size}", fontWeight = FontWeight.Bold, fontSize = 19.sp, color = p.textPrimary)
+                    },
+                    actions = {
+                        if (selectedMessages.size == 1) {
+                            val single = selectedMessages.first()
+                            IconButton(onClick = {
+                                replyingTo = single
+                                selectedIds = emptySet()
+                            }) {
+                                Icon(Icons.Default.Reply, "Reply", tint = p.textPrimary)
+                            }
+                            IconButton(onClick = {
+                                showReactionDialogFor = single
+                                selectedIds = emptySet()
+                            }) {
+                                Icon(Icons.Default.AddReaction, "React", tint = p.textPrimary)
                             }
                         }
-                        Spacer(Modifier.width(10.dp))
-                        Column {
-                            Text(chat.title, fontSize = 16.5.sp, fontWeight = FontWeight.SemiBold, color = p.textPrimary)
-                            val sub = when {
-                                isPartnerTyping -> "typing..."
-                                chat.isGroup -> "${chat.memberIdsCsv.split(",").size} participants"
-                                isPartnerOnline -> "online"
-                                else -> "tap here for info"
+                        if (selectedMessages.any { !it.isDeleted && it.mediaType == "TEXT" }) {
+                            IconButton(onClick = {
+                                val copied = selectedMessages
+                                    .filter { !it.isDeleted && it.mediaType == "TEXT" }
+                                    .joinToString("\n") { it.content }
+                                clipboard.setText(AnnotatedString(copied))
+                                selectedIds = emptySet()
+                            }) {
+                                Icon(Icons.Default.ContentCopy, "Copy", tint = p.textPrimary)
                             }
-                            Text(sub, fontSize = 12.sp, color = if (isPartnerTyping || isPartnerOnline) p.accent else p.textSecondary)
                         }
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { onStartCall(true) }) {
-                        Icon(Icons.Default.Videocam, "Video Call", tint = p.textPrimary)
-                    }
-                    IconButton(onClick = { onStartCall(false) }) {
-                        Icon(Icons.Default.Call, "Voice Call", tint = p.textPrimary)
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = p.topBar)
-            )
+                        IconButton(onClick = { showDeleteDialog = true }) {
+                            Icon(Icons.Default.Delete, "Delete", tint = p.textPrimary)
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = p.surface)
+                )
+            } else {
+                TopAppBar(
+                    navigationIcon = {
+                        IconButton(onClick = onBack) {
+                            Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = p.textPrimary)
+                        }
+                    },
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().clickable { onOpenInfo() }
+                        ) {
+                            AvatarImage(
+                                avatarUrl = if (chat.isGroup) null else getAvatarUrl(chat.chatId, chat.avatarVersion),
+                                avatarBase64 = chat.avatarBase64,
+                                isGroup = chat.isGroup,
+                                size = 38.dp
+                            )
+                            Spacer(Modifier.width(10.dp))
+                            Column {
+                                Text(chat.title, fontSize = 16.5.sp, fontWeight = FontWeight.SemiBold, color = p.textPrimary)
+                                val sub = when {
+                                    isPartnerTyping -> "typing..."
+                                    chat.isGroup -> "${chat.memberIdsCsv.split(",").size} participants • tap for info"
+                                    isPartnerOnline -> "online"
+                                    else -> "tap here for contact info"
+                                }
+                                Text(sub, fontSize = 12.sp, color = if (isPartnerTyping || isPartnerOnline) p.accent else p.textSecondary)
+                            }
+                        }
+                    },
+                    actions = {
+                        IconButton(onClick = { onStartCall(true) }) {
+                            Icon(Icons.Default.Videocam, "Video Call", tint = p.textPrimary)
+                        }
+                        IconButton(onClick = { onStartCall(false) }) {
+                            Icon(Icons.Default.Call, "Voice Call", tint = p.textPrimary)
+                        }
+                        Box {
+                            IconButton(onClick = { showOverflowMenu = true }) {
+                                Icon(Icons.Default.MoreVert, "Chat Menu", tint = p.textPrimary)
+                            }
+                            DropdownMenu(expanded = showOverflowMenu, onDismissRequest = { showOverflowMenu = false }, containerColor = p.surface) {
+                                DropdownMenuItem(
+                                    text = { Text(if (chat.isGroup) "Group info" else "View contact", color = p.textPrimary) },
+                                    onClick = { showOverflowMenu = false; onOpenInfo() }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Clear chat", color = p.textPrimary) },
+                                    onClick = { showOverflowMenu = false; showClearConfirm = true }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Delete chat", color = p.danger) },
+                                    onClick = { showOverflowMenu = false; showDeleteChatConfirm = true }
+                                )
+                            }
+                        }
+                    },
+                    colors = TopAppBarDefaults.topAppBarColors(containerColor = p.topBar)
+                )
+            }
         },
         bottomBar = {
             Column(modifier = Modifier.background(p.chatBg).padding(bottom = 6.dp)) {
@@ -159,6 +252,8 @@ fun ChatScreen(
                     }
                 }
                 replyingTo?.let { reply ->
+                    val replySenderName = if (reply.senderId == myUserId) "You"
+                    else memberProfiles[reply.senderId]?.displayName?.ifBlank { reply.senderId } ?: reply.senderId
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
@@ -170,12 +265,7 @@ fun ChatScreen(
                         Box(Modifier.width(4.dp).height(30.dp).background(p.accent))
                         Spacer(Modifier.width(8.dp))
                         Column(Modifier.weight(1f)) {
-                            Text(
-                                if (reply.senderId == myUserId) "You" else reply.senderId,
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Bold,
-                                color = p.accent
-                            )
+                            Text(replySenderName, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = p.accent)
                             Text(reply.content, maxLines = 1, fontSize = 13.sp, color = p.textSecondary)
                         }
                         IconButton(onClick = { replyingTo = null }) {
@@ -296,8 +386,8 @@ fun ChatScreen(
 
             LazyColumn(
                 state = listState,
-                modifier = Modifier.fillMaxSize().padding(horizontal = 10.dp),
-                verticalArrangement = Arrangement.spacedBy(5.dp),
+                modifier = Modifier.fillMaxSize().padding(horizontal = 8.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
                 contentPadding = PaddingValues(vertical = 10.dp)
             ) {
                 item {
@@ -323,27 +413,46 @@ fun ChatScreen(
                     if (index == 0 || currentDateLabel != prevDateLabel) {
                         Box(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), contentAlignment = Alignment.Center) {
                             Surface(color = p.datePill, shape = RoundedCornerShape(10.dp)) {
-                                Text(
-                                    currentDateLabel,
-                                    color = p.textSecondary,
-                                    fontSize = 11.5.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                                )
+                                Text(currentDateLabel, color = p.textSecondary, fontSize = 11.5.sp, fontWeight = FontWeight.Medium, modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp))
                             }
                         }
                     }
 
                     val isMine = msg.senderId == myUserId
+                    val isSelected = selectedIds.contains(msg.id)
                     val time = remember(msg.timestamp) { SimpleDateFormat("h:mm a", Locale.getDefault()).format(Date(msg.timestamp)) }
                     val imgBitmap = remember(msg.mediaBase64, msg.mediaType) {
                         if (msg.mediaType == "IMAGE") MediaHelper.decodeBase64ToImage(msg.mediaBase64) else null
                     }
-                    val voiceAvatar = remember(isMine, myAvatarBase64, chat.avatarBase64) {
-                        MediaHelper.decodeBase64ToImage(if (isMine) myAvatarBase64 else chat.avatarBase64)
-                    }
+                    val senderProfile = memberProfiles[msg.senderId]
 
-                    Box(Modifier.fillMaxWidth(), contentAlignment = if (isMine) Alignment.CenterEnd else Alignment.CenterStart) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(if (isSelected) p.accent.copy(alpha = 0.18f) else Color.Transparent, RoundedCornerShape(8.dp))
+                            .combinedClickable(
+                                onClick = {
+                                    if (isSelectionMode) {
+                                        selectedIds = if (isSelected) selectedIds - msg.id else selectedIds + msg.id
+                                    }
+                                },
+                                onLongClick = {
+                                    selectedIds = if (isSelected) selectedIds - msg.id else selectedIds + msg.id
+                                }
+                            )
+                            .padding(horizontal = 2.dp, vertical = 1.dp),
+                        horizontalArrangement = if (isMine) Arrangement.End else Arrangement.Start,
+                        verticalAlignment = Alignment.Bottom
+                    ) {
+                        if (chat.isGroup && !isMine) {
+                            AvatarImage(
+                                avatarUrl = getAvatarUrl(msg.senderId, senderProfile?.avatarVersion ?: 0L),
+                                avatarBase64 = senderProfile?.avatarBase64,
+                                size = 28.dp,
+                                modifier = Modifier.padding(end = 6.dp, bottom = 2.dp)
+                            )
+                        }
+
                         Surface(
                             color = if (isMine) p.outBubble else p.inBubble,
                             shape = RoundedCornerShape(
@@ -353,13 +462,12 @@ fun ChatScreen(
                                 bottomEnd = 14.dp
                             ),
                             shadowElevation = if (p.isDark) 0.dp else 1.dp,
-                            modifier = Modifier
-                                .widthIn(min = 90.dp, max = 300.dp)
-                                .combinedClickable(onClick = {}, onLongClick = { selectedMsg = msg })
+                            modifier = Modifier.widthIn(min = 90.dp, max = 290.dp)
                         ) {
                             Column(modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)) {
                                 if (chat.isGroup && !isMine) {
-                                    Text(msg.senderId, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = p.accent)
+                                    val senderLabel = senderProfile?.displayName?.ifBlank { msg.senderId } ?: msg.senderId
+                                    Text(senderLabel, fontSize = 11.5.sp, fontWeight = FontWeight.Bold, color = p.accent)
                                 }
                                 if (msg.replyToText != null) {
                                     Row(
@@ -385,7 +493,13 @@ fun ChatScreen(
                                                 .fillMaxWidth()
                                                 .heightIn(max = 240.dp)
                                                 .clip(RoundedCornerShape(8.dp))
-                                                .clickable { viewingPhotoMsg = msg }
+                                                .clickable {
+                                                    if (isSelectionMode) {
+                                                        selectedIds = if (isSelected) selectedIds - msg.id else selectedIds + msg.id
+                                                    } else {
+                                                        viewingPhotoMsg = msg
+                                                    }
+                                                }
                                         )
                                         Spacer(Modifier.height(4.dp))
                                     }
@@ -395,24 +509,14 @@ fun ChatScreen(
                                             val seed = abs(msg.id.hashCode())
                                             List(22) { idx -> 6 + ((seed + idx * 17) % 18) }
                                         }
-                                        Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            modifier = Modifier.width(245.dp).padding(vertical = 4.dp)
-                                        ) {
+                                        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.width(240.dp).padding(vertical = 4.dp)) {
                                             Box(modifier = Modifier.size(44.dp)) {
-                                                Box(
-                                                    Modifier.size(42.dp).clip(CircleShape).background(p.surfaceVariant),
-                                                    Alignment.Center
-                                                ) {
-                                                    if (voiceAvatar != null) Image(voiceAvatar, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                                                    else Icon(Icons.Default.Person, null, tint = p.textPrimary)
-                                                }
-                                                Icon(
-                                                    Icons.Default.Mic,
-                                                    null,
-                                                    tint = p.tickBlue,
-                                                    modifier = Modifier.size(16.dp).align(Alignment.BottomEnd)
+                                                AvatarImage(
+                                                    avatarUrl = if (isMine) getAvatarUrl(myUserId, myAvatarVersion) else getAvatarUrl(msg.senderId, senderProfile?.avatarVersion ?: chat.avatarVersion),
+                                                    avatarBase64 = if (isMine) myAvatarBase64 else (senderProfile?.avatarBase64 ?: chat.avatarBase64),
+                                                    size = 42.dp
                                                 )
+                                                Icon(Icons.Default.Mic, null, tint = p.tickBlue, modifier = Modifier.size(16.dp).align(Alignment.BottomEnd))
                                             }
                                             Spacer(Modifier.width(6.dp))
                                             IconButton(
@@ -427,28 +531,13 @@ fun ChatScreen(
                                                 },
                                                 modifier = Modifier.size(34.dp)
                                             ) {
-                                                Icon(
-                                                    if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                                    null,
-                                                    tint = p.textSecondary,
-                                                    modifier = Modifier.size(30.dp)
-                                                )
+                                                Icon(if (isPlaying) Icons.Default.Pause else Icons.Default.PlayArrow, null, tint = p.textSecondary, modifier = Modifier.size(30.dp))
                                             }
                                             Column(modifier = Modifier.weight(1f)) {
-                                                Row(
-                                                    verticalAlignment = Alignment.CenterVertically,
-                                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
-                                                    modifier = Modifier.height(26.dp)
-                                                ) {
+                                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp), modifier = Modifier.height(26.dp)) {
                                                     Box(Modifier.size(9.dp).clip(CircleShape).background(p.tickBlue))
                                                     bars.forEach { h ->
-                                                        Box(
-                                                            Modifier
-                                                                .width(2.5.dp)
-                                                                .height(h.dp)
-                                                                .clip(RoundedCornerShape(2.dp))
-                                                                .background(if (isPlaying) p.tickBlue else p.textSecondary.copy(alpha = 0.7f))
-                                                        )
+                                                        Box(Modifier.width(2.5.dp).height(h.dp).clip(RoundedCornerShape(2.dp)).background(if (isPlaying) p.tickBlue else p.textSecondary.copy(alpha = 0.7f)))
                                                     }
                                                 }
                                                 Text("0:${msg.durationSec.toString().padStart(2, '0')}", fontSize = 11.sp, color = p.textSecondary)
@@ -482,6 +571,102 @@ fun ChatScreen(
         }
     }
 
+    // WhatsApp Multi-Select Delete Confirmation Dialog
+    if (showDeleteDialog && selectedMessages.isNotEmpty()) {
+        val allowEveryone = canDeleteForEveryone(selectedMessages)
+        AlertDialog(
+            onDismissRequest = { showDeleteDialog = false },
+            containerColor = p.surface,
+            title = {
+                Text(
+                    "Delete ${selectedMessages.size} message${if (selectedMessages.size > 1) "s" else ""}?",
+                    color = p.textPrimary
+                )
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    if (allowEveryone) {
+                        TextButton(
+                            onClick = {
+                                val ids = selectedMessages.map { it.id }
+                                showDeleteDialog = false
+                                selectedIds = emptySet()
+                                onDeleteForEveryone(ids)
+                            },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Delete for everyone", color = p.danger, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+                        }
+                    }
+                    TextButton(
+                        onClick = {
+                            val ids = selectedMessages.map { it.id }
+                            showDeleteDialog = false
+                            selectedIds = emptySet()
+                            onDeleteForMe(ids)
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Delete for me", color = p.accent, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+                    }
+                    TextButton(
+                        onClick = { showDeleteDialog = false },
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text("Cancel", color = p.textSecondary, modifier = Modifier.fillMaxWidth(), textAlign = TextAlign.End)
+                    }
+                }
+            },
+            confirmButton = {}
+        )
+    }
+
+    if (showClearConfirm) {
+        AlertDialog(
+            onDismissRequest = { showClearConfirm = false },
+            containerColor = p.surface,
+            title = { Text("Clear this chat?", color = p.textPrimary) },
+            text = { Text("Messages will be cleared from your copy of this conversation only.", color = p.textSecondary) },
+            confirmButton = {
+                TextButton(onClick = { showClearConfirm = false; onClearChat() }) { Text("Clear chat", color = p.danger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearConfirm = false }) { Text("Cancel", color = p.accent) }
+            }
+        )
+    }
+
+    if (showDeleteChatConfirm) {
+        AlertDialog(
+            onDismissRequest = { showDeleteChatConfirm = false },
+            containerColor = p.surface,
+            title = { Text("Delete this chat?", color = p.textPrimary) },
+            text = { Text("This deletes the chat from your device only. Other participants still keep their messages.", color = p.textSecondary) },
+            confirmButton = {
+                TextButton(onClick = { showDeleteChatConfirm = false; onDeleteChat() }) { Text("Delete chat", color = p.danger) }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDeleteChatConfirm = false }) { Text("Cancel", color = p.accent) }
+            }
+        )
+    }
+
+    showReactionDialogFor?.let { target ->
+        AlertDialog(
+            onDismissRequest = { showReactionDialogFor = null },
+            containerColor = p.surface,
+            title = { Text("React to message", color = p.textPrimary) },
+            text = {
+                Row(horizontalArrangement = Arrangement.SpaceEvenly, modifier = Modifier.fillMaxWidth()) {
+                    listOf("❤️", "😂", "👍", "🙏", "🔥").forEach { emoji ->
+                        TextButton(onClick = { onReact(target.id, emoji); showReactionDialogFor = null }) { Text(emoji, fontSize = 22.sp) }
+                    }
+                }
+            },
+            confirmButton = { TextButton(onClick = { showReactionDialogFor = null }) { Text("Close", color = p.accent) } }
+        )
+    }
+
     viewingPhotoMsg?.let { photoMsg ->
         val fullBmp = remember(photoMsg.mediaBase64) { MediaHelper.decodeBase64ToImage(photoMsg.mediaBase64) }
         val time = remember(photoMsg.timestamp) { SimpleDateFormat("dd MMM, h:mm a", Locale.getDefault()).format(Date(photoMsg.timestamp)) }
@@ -505,28 +690,6 @@ fun ChatScreen(
             }
         }
     }
-
-    selectedMsg?.let { target ->
-        AlertDialog(
-            onDismissRequest = { selectedMsg = null },
-            containerColor = p.surface,
-            title = { Text("Message Options", color = p.textPrimary) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        listOf("❤️", "😂", "👍", "🙏", "🔥").forEach { emoji ->
-                            TextButton(onClick = { onReact(target.id, emoji); selectedMsg = null }) { Text(emoji, fontSize = 20.sp) }
-                        }
-                    }
-                    TextButton(onClick = { replyingTo = target; selectedMsg = null }) { Text("Reply", color = p.textPrimary) }
-                    if (target.senderId == myUserId && !target.isDeleted) {
-                        TextButton(onClick = { onDelete(target.id); selectedMsg = null }) { Text("Delete for everyone", color = p.danger) }
-                    }
-                }
-            },
-            confirmButton = { TextButton(onClick = { selectedMsg = null }) { Text("Close", color = p.accent) } }
-        )
-    }
 }
 
 private fun formatDatePill(timestamp: Long): String {
@@ -540,3 +703,4 @@ private fun formatDatePill(timestamp: Long): String {
         SimpleDateFormat("MMMM d, yyyy", Locale.getDefault()).format(Date(timestamp))
     }
 }
+
