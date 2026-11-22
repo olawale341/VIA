@@ -60,6 +60,15 @@ class ChatSocketClient {
         return "$scheme://$host"
     }
 
+    fun avatarUrl(serverHost: String, phone: String, version: Long): String? {
+        if (phone.isBlank() || version <= 0L) return null
+        return "${httpBase(serverHost)}/avatar/${phone.encodeURLParameter()}?v=$version"
+    }
+
+    fun updateCachedProfile(dto: RegisteredUserDto) {
+        profileCache[dto.phone] = dto
+    }
+
     suspend fun requestOtp(serverHost: String, phone: String, email: String): OtpApiResult {
         return try {
             val resp = client.post("${httpBase(serverHost)}/auth/request-otp") {
@@ -84,17 +93,26 @@ class ChatSocketClient {
         }
     }
 
-    suspend fun syncProfile(serverHost: String, phone: String, displayName: String, about: String, avatarBase64: String?) {
-        try {
-            client.post("${httpBase(serverHost)}/profile/sync") {
+    suspend fun syncProfile(
+        serverHost: String,
+        phone: String,
+        displayName: String,
+        about: String,
+        avatarBase64: String?
+    ): OtpApiResult {
+        return try {
+            val resp = client.post("${httpBase(serverHost)}/profile/sync") {
                 contentType(ContentType.Application.Json)
                 setBody(json.encodeToString(ProfileSyncBody(phone, displayName, about, avatarBase64)))
             }
-        } catch (_: Exception) { }
+            json.decodeFromString<OtpApiResult>(resp.bodyAsText())
+        } catch (e: Exception) {
+            OtpApiResult(false, "Upload failed: ${e.localizedMessage ?: "No internet"}")
+        }
     }
 
-    suspend fun fetchProfile(serverHost: String, phone: String): RegisteredUserDto? {
-        profileCache[phone]?.let { return it }
+    suspend fun fetchProfile(serverHost: String, phone: String, forceRefresh: Boolean = false): RegisteredUserDto? {
+        if (!forceRefresh) profileCache[phone]?.let { return it }
         return try {
             val resp = client.get("${httpBase(serverHost)}/profile/${phone.encodeURLParameter()}")
             val dto = json.decodeFromString<RegisteredUserDto>(resp.bodyAsText())
@@ -149,6 +167,27 @@ class ChatSocketClient {
             users
         } catch (_: Exception) {
             emptyList()
+        }
+    }
+
+    suspend fun syncGroup(serverHost: String, group: GroupSyncBody) {
+        try {
+            client.post("${httpBase(serverHost)}/groups/sync") {
+                contentType(ContentType.Application.Json)
+                setBody(json.encodeToString(group))
+            }
+        } catch (_: Exception) { }
+    }
+
+    suspend fun fetchGroupInfo(serverHost: String, chatId: String): GroupInfoResponse? {
+        return try {
+            val resp = client.get("${httpBase(serverHost)}/groups/${chatId.encodeURLParameter()}")
+            if (!resp.status.isSuccess()) return null
+            val info = json.decodeFromString<GroupInfoResponse>(resp.bodyAsText())
+            info.members.forEach { profileCache[it.phone] = it }
+            info
+        } catch (_: Exception) {
+            null
         }
     }
 
