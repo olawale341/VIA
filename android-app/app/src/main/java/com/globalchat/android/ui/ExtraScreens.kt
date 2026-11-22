@@ -8,8 +8,10 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
@@ -46,6 +48,7 @@ fun ActiveCallScreen(
 ) {
     val context = LocalContext.current
     var seconds by remember(call.status) { mutableIntStateOf(0) }
+    val partnerAvatar = remember(call.partnerAvatarBase64) { MediaHelper.decodeBase64ToImage(call.partnerAvatarBase64) }
 
     LaunchedEffect(call.status) {
         if (call.status == CallStatus.CONNECTED) {
@@ -74,12 +77,8 @@ fun ActiveCallScreen(
     }
 
     DisposableEffect(call.isVideo) {
-        if (call.isVideo) {
-            onAttachRenderers(localView, remoteView)
-        }
-        onDispose {
-            if (call.isVideo) onDetachRenderers()
-        }
+        if (call.isVideo) onAttachRenderers(localView, remoteView)
+        onDispose { if (call.isVideo) onDetachRenderers() }
     }
 
     val statusText = when (call.status) {
@@ -112,7 +111,7 @@ fun ActiveCallScreen(
         ) {
             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                 Spacer(Modifier.height(24.dp))
-                Text("GlobalChat Live Call", fontSize = 12.sp, color = Color(0xFF8696A0))
+                Text("🔒 End-to-end encrypted", fontSize = 12.sp, color = Color(0xFF8696A0))
                 Spacer(Modifier.height(18.dp))
                 Text(call.title, fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color.White)
                 Spacer(Modifier.height(8.dp))
@@ -120,16 +119,15 @@ fun ActiveCallScreen(
             }
 
             if (!call.isVideo || call.status != CallStatus.CONNECTED) {
-                Box(Modifier.size(130.dp).clip(CircleShape).background(Color(0xFF202C33)), Alignment.Center) {
-                    Icon(
-                        if (call.isVideo) Icons.Default.Videocam else Icons.Default.Person,
-                        null,
-                        tint = Color.White,
-                        modifier = Modifier.size(64.dp)
-                    )
+                Box(Modifier.size(134.dp).clip(CircleShape).background(Color(0xFF202C33)), Alignment.Center) {
+                    if (partnerAvatar != null) {
+                        Image(partnerAvatar, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
+                    } else {
+                        Icon(if (call.isVideo) Icons.Default.Videocam else Icons.Default.Person, null, tint = Color.White, modifier = Modifier.size(64.dp))
+                    }
                 }
             } else {
-                Spacer(Modifier.height(130.dp))
+                Spacer(Modifier.height(134.dp))
             }
 
             if (call.status == CallStatus.INCOMING_RINGING) {
@@ -139,26 +137,15 @@ fun ActiveCallScreen(
                     verticalAlignment = Alignment.CenterVertically
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        IconButton(
-                            onClick = onEndCall,
-                            modifier = Modifier.size(66.dp).background(Color(0xFFE53935), CircleShape)
-                        ) {
+                        IconButton(onClick = onEndCall, modifier = Modifier.size(66.dp).background(Color(0xFFE53935), CircleShape)) {
                             Icon(Icons.Default.CallEnd, "Decline", tint = Color.White, modifier = Modifier.size(30.dp))
                         }
                         Spacer(Modifier.height(6.dp))
                         Text("Decline", color = Color.White, fontSize = 12.sp)
                     }
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        IconButton(
-                            onClick = onAccept,
-                            modifier = Modifier.size(66.dp).background(Color(0xFF1DAB61), CircleShape)
-                        ) {
-                            Icon(
-                                if (call.isVideo) Icons.Default.Videocam else Icons.Default.Call,
-                                "Accept",
-                                tint = Color.White,
-                                modifier = Modifier.size(30.dp)
-                            )
+                        IconButton(onClick = onAccept, modifier = Modifier.size(66.dp).background(Color(0xFF25D366), CircleShape)) {
+                            Icon(if (call.isVideo) Icons.Default.Videocam else Icons.Default.Call, "Accept", tint = Color.White, modifier = Modifier.size(30.dp))
                         }
                         Spacer(Modifier.height(6.dp))
                         Text("Accept", color = Color.White, fontSize = 12.sp)
@@ -198,16 +185,19 @@ fun ActiveCallScreen(
 @Composable
 fun SettingsScreen(
     profile: UserProfile,
-    onSave: (String, String, String, Boolean, Uri?) -> Unit,
+    onSave: (String, String, String, Boolean, String, Uri?) -> Unit,
     onBack: () -> Unit,
     onLogOut: () -> Unit
 ) {
+    val p = LocalWaPalette.current
     val context = LocalContext.current
     var name by remember { mutableStateOf(profile.displayName) }
     var about by remember { mutableStateOf(profile.about) }
     var serverHost by remember { mutableStateOf(profile.serverHost) }
     var readReceipts by remember { mutableStateOf(profile.readReceipts) }
+    var themeMode by remember { mutableStateOf(profile.themeMode) }
     var pickedUri by remember { mutableStateOf<Uri?>(null) }
+    var showLogoutConfirm by remember { mutableStateOf(false) }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { if (it != null) pickedUri = it }
     val avatarBmp = remember(pickedUri, profile.avatarBase64) {
@@ -216,58 +206,141 @@ fun SettingsScreen(
     }
 
     Scaffold(
-        containerColor = Color.White,
+        containerColor = p.bg,
         topBar = {
             TopAppBar(
                 navigationIcon = {
-                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
+                    IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back", tint = p.textPrimary) }
                 },
-                title = { Text("Settings") },
-                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color.White)
+                title = { Text("Settings", color = p.textPrimary) },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = p.topBar)
             )
         }
     ) { padding ->
-        Column(modifier = Modifier.fillMaxSize().padding(padding).padding(20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+                .verticalScroll(rememberScrollState())
+                .padding(20.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    Modifier.size(70.dp).clip(CircleShape).background(Color(0xFFDFE5E7)).clickable {
+                    Modifier.size(72.dp).clip(CircleShape).background(p.surface).clickable {
                         picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                     },
                     Alignment.Center
                 ) {
                     if (avatarBmp != null) Image(avatarBmp, null, contentScale = ContentScale.Crop, modifier = Modifier.fillMaxSize())
-                    else Icon(Icons.Default.Person, null, tint = Color.White, modifier = Modifier.size(36.dp))
+                    else Icon(Icons.Default.AddAPhoto, null, tint = p.textSecondary, modifier = Modifier.size(30.dp))
                 }
                 Spacer(Modifier.width(14.dp))
                 Column {
-                    Text(profile.displayName, fontWeight = FontWeight.Bold, fontSize = 18.sp)
-                    Text(profile.phoneNumber, fontSize = 13.sp, color = Color(0xFF667781))
+                    Text(profile.displayName, fontWeight = FontWeight.Bold, fontSize = 18.sp, color = p.textPrimary)
+                    Text(profile.phoneNumber, fontSize = 13.sp, color = p.textSecondary)
                 }
             }
 
-            OutlinedTextField(value = name, onValueChange = { name = it }, label = { Text("Display Name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = about, onValueChange = { about = it }, label = { Text("About") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(value = serverHost, onValueChange = { serverHost = it }, label = { Text("Cloud Server Address") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+            OutlinedTextField(
+                value = name,
+                onValueChange = { name = it },
+                label = { Text("Display Name") },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = p.textPrimary,
+                    unfocusedTextColor = p.textPrimary,
+                    focusedBorderColor = p.accent,
+                    unfocusedBorderColor = p.surfaceVariant,
+                    focusedLabelColor = p.accent,
+                    unfocusedLabelColor = p.textSecondary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = about,
+                onValueChange = { about = it },
+                label = { Text("About") },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = p.textPrimary,
+                    unfocusedTextColor = p.textPrimary,
+                    focusedBorderColor = p.accent,
+                    unfocusedBorderColor = p.surfaceVariant,
+                    focusedLabelColor = p.accent,
+                    unfocusedLabelColor = p.textSecondary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+            OutlinedTextField(
+                value = serverHost,
+                onValueChange = { serverHost = it },
+                label = { Text("Cloud Server Address") },
+                singleLine = true,
+                colors = OutlinedTextFieldDefaults.colors(
+                    focusedTextColor = p.textPrimary,
+                    unfocusedTextColor = p.textPrimary,
+                    focusedBorderColor = p.accent,
+                    unfocusedBorderColor = p.surfaceVariant,
+                    focusedLabelColor = p.accent,
+                    unfocusedLabelColor = p.textSecondary
+                ),
+                modifier = Modifier.fillMaxWidth()
+            )
+
+            Text("Theme", fontWeight = FontWeight.Medium, color = p.textPrimary)
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("SYSTEM" to "System", "LIGHT" to "Light", "DARK" to "Dark").forEach { (key, label) ->
+                    FilterChip(
+                        selected = themeMode == key,
+                        onClick = { themeMode = key },
+                        label = { Text(label) },
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
 
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Read receipts", fontWeight = FontWeight.Medium)
-                    Text("Send and receive blue ticks", fontSize = 12.sp, color = Color.Gray)
+                    Text("Read receipts", fontWeight = FontWeight.Medium, color = p.textPrimary)
+                    Text("Send and receive blue ticks", fontSize = 12.sp, color = p.textSecondary)
                 }
                 Switch(checked = readReceipts, onCheckedChange = { readReceipts = it })
             }
 
             Button(
-                onClick = { onSave(name, about, serverHost, readReceipts, pickedUri); onBack() },
-                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF008069)),
+                onClick = { onSave(name, about, serverHost, readReceipts, themeMode, pickedUri); onBack() },
+                shape = RoundedCornerShape(24.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = p.accent),
                 modifier = Modifier.fillMaxWidth().height(48.dp)
             ) {
-                Text("Save Changes", color = Color.White, fontWeight = FontWeight.SemiBold)
+                Text("Save Changes", color = p.accentText, fontWeight = FontWeight.SemiBold)
             }
 
-            OutlinedButton(onClick = onLogOut, modifier = Modifier.fillMaxWidth()) {
-                Text("Log Out / Switch Number", color = Color.Red)
+            OutlinedButton(
+                onClick = { showLogoutConfirm = true },
+                shape = RoundedCornerShape(24.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Log Out / Switch Number", color = p.danger)
             }
         }
+    }
+
+    if (showLogoutConfirm) {
+        AlertDialog(
+            onDismissRequest = { showLogoutConfirm = false },
+            containerColor = p.surface,
+            title = { Text("Log out of GlobalChat?", color = p.textPrimary) },
+            text = { Text("You can log straight back in anytime using your same phone number and email.", color = p.textSecondary) },
+            confirmButton = {
+                TextButton(onClick = { showLogoutConfirm = false; onLogOut() }) {
+                    Text("Log out", color = p.danger)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showLogoutConfirm = false }) { Text("Cancel", color = p.accent) }
+            }
+        )
     }
 }
