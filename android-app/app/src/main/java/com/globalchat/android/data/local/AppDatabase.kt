@@ -16,7 +16,9 @@ data class ChatEntity(
     val lastMessage: String,
     val lastTimestamp: Long,
     val unreadCount: Int = 0,
-    val avatarBase64: String? = null
+    val avatarBase64: String? = null,
+    val avatarVersion: Long = 0L,
+    val adminIdsCsv: String = ""
 )
 
 @Entity(tableName = "messages")
@@ -33,7 +35,8 @@ data class MessageEntity(
     val replyToId: String? = null,
     val replyToText: String? = null,
     val reaction: String? = null,
-    val isDeleted: Boolean = false
+    val isDeleted: Boolean = false,
+    val deletedForMe: Boolean = false
 )
 
 @Entity(tableName = "statuses")
@@ -82,8 +85,17 @@ interface ChatDao {
     @Query("UPDATE chats SET unreadCount = 0 WHERE chatId = :chatId")
     suspend fun clearUnread(chatId: String)
 
-    @Query("SELECT * FROM messages WHERE chatId = :chatId ORDER BY timestamp ASC")
+    @Query("UPDATE chats SET lastMessage = '', unreadCount = 0 WHERE chatId = :chatId")
+    suspend fun clearChatPreview(chatId: String)
+
+    @Query("DELETE FROM chats WHERE chatId = :chatId")
+    suspend fun deleteChatRow(chatId: String)
+
+    @Query("SELECT * FROM messages WHERE chatId = :chatId AND deletedForMe = 0 ORDER BY timestamp ASC")
     fun observeMessages(chatId: String): Flow<List<MessageEntity>>
+
+    @Query("SELECT * FROM messages WHERE id = :id LIMIT 1")
+    suspend fun getMessage(id: String): MessageEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertMessage(message: MessageEntity)
@@ -96,6 +108,12 @@ interface ChatDao {
 
     @Query("UPDATE messages SET content = 'This message was deleted', mediaType = 'TEXT', mediaBase64 = NULL, isDeleted = 1, reaction = NULL WHERE id = :messageId")
     suspend fun markDeleted(messageId: String)
+
+    @Query("UPDATE messages SET deletedForMe = 1 WHERE id IN (:ids)")
+    suspend fun markDeletedForMe(ids: List<String>)
+
+    @Query("DELETE FROM messages WHERE chatId = :chatId")
+    suspend fun deleteMessagesForChat(chatId: String)
 
     @Query("SELECT * FROM statuses ORDER BY timestamp DESC")
     fun observeStatuses(): Flow<List<StatusEntity>>
@@ -124,7 +142,7 @@ interface ChatDao {
 
 @Database(
     entities = [ChatEntity::class, MessageEntity::class, StatusEntity::class, CallLogEntity::class],
-    version = 3,
+    version = 4,
     exportSchema = false
 )
 @TypeConverters(Converters::class)
@@ -158,6 +176,7 @@ class ProfilePrefs(context: Context) {
         displayName = prefs.getString("name", "") ?: "",
         about = prefs.getString("about", "Hey there! I am using GlobalChat.") ?: "Hey there! I am using GlobalChat.",
         avatarBase64 = prefs.getString("avatar", null),
+        avatarVersion = prefs.getLong("avatar_version", 0L),
         serverHost = prefs.getString("server", DEFAULT_SERVER_HOST) ?: DEFAULT_SERVER_HOST,
         readReceipts = prefs.getBoolean("read_receipts", true),
         isRegistered = prefs.getBoolean("registered", false),
@@ -170,6 +189,7 @@ class ProfilePrefs(context: Context) {
             .putString("name", profile.displayName)
             .putString("about", profile.about)
             .putString("avatar", profile.avatarBase64)
+            .putLong("avatar_version", profile.avatarVersion)
             .putString("server", profile.serverHost)
             .putBoolean("read_receipts", profile.readReceipts)
             .putBoolean("registered", profile.isRegistered)
