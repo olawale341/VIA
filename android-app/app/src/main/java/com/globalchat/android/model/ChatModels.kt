@@ -3,6 +3,7 @@ package com.globalchat.android.model
 import kotlinx.serialization.Serializable
 
 const val DEFAULT_SERVER_HOST = "globalchat-server.onrender.com"
+const val DELETE_FOR_EVERYONE_LIMIT_MS = 48L * 60L * 60L * 1000L
 
 @Serializable
 enum class MessageStatus { SENDING, SENT, DELIVERED, READ }
@@ -28,7 +29,9 @@ data class ChatPayload(
     val callVideo: Boolean = false,
     val sdpMid: String? = null,
     val sdpMLineIndex: Int = 0,
-    val isEncrypted: Boolean = false
+    val isEncrypted: Boolean = false,
+    val avatarVersion: Long = 0L,
+    val adminIdsCsv: String = ""
 )
 
 @Serializable
@@ -38,7 +41,7 @@ data class OtpRequestBody(val phone: String, val email: String)
 data class OtpVerifyBody(val phone: String, val code: String)
 
 @Serializable
-data class OtpApiResult(val ok: Boolean, val message: String)
+data class OtpApiResult(val ok: Boolean, val message: String, val avatarVersion: Long = 0L)
 
 @Serializable
 data class ProfileSyncBody(val phone: String, val displayName: String, val about: String, val avatarBase64: String? = null)
@@ -56,10 +59,27 @@ data class PublicKeyResponse(val phone: String, val publicKey: String = "")
 data class ContactSyncRequest(val phones: List<String>)
 
 @Serializable
-data class RegisteredUserDto(val phone: String, val displayName: String, val about: String, val avatarBase64: String? = null)
+data class RegisteredUserDto(
+    val phone: String,
+    val displayName: String,
+    val about: String,
+    val avatarBase64: String? = null,
+    val avatarVersion: Long = 0L
+)
 
 @Serializable
 data class ContactSyncResponse(val users: List<RegisteredUserDto> = emptyList())
+
+@Serializable
+data class GroupSyncBody(val chatId: String, val title: String, val adminPhonesCsv: String, val memberPhonesCsv: String)
+
+@Serializable
+data class GroupInfoResponse(
+    val chatId: String,
+    val title: String,
+    val adminPhonesCsv: String,
+    val members: List<RegisteredUserDto> = emptyList()
+)
 
 @Serializable
 data class StatusDto(
@@ -97,7 +117,8 @@ data class PhoneContact(
     val phoneNumber: String,
     val isOnGlobalChat: Boolean = false,
     val about: String = "",
-    val avatarBase64: String? = null
+    val avatarBase64: String? = null,
+    val avatarVersion: Long = 0L
 )
 
 data class UserProfile(
@@ -105,6 +126,7 @@ data class UserProfile(
     val displayName: String = "",
     val about: String = "Hey there! I am using GlobalChat.",
     val avatarBase64: String? = null,
+    val avatarVersion: Long = 0L,
     val serverHost: String = DEFAULT_SERVER_HOST,
     val readReceipts: Boolean = true,
     val isRegistered: Boolean = false,
@@ -118,5 +140,13 @@ data class ActiveCallUiState(
     val status: CallStatus = CallStatus.OUTGOING_RINGING,
     val isMuted: Boolean = false,
     val isSpeaker: Boolean = false,
-    val partnerAvatarBase64: String? = null
+    val partnerAvatarBase64: String? = null,
+    val partnerAvatarVersion: Long = 0L
+)
+
+data class UploadStatusUi(
+    val isUploading: Boolean = false,
+    val progress: Float = 0f,
+    val message: String? = null,
+    val isError: Boolean = false
 )
